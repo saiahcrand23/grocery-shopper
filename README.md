@@ -13,9 +13,11 @@ Step 4 matters more than it looks. Safari will auto-clear a normal website's sto
 
 ## Using it
 
-**Shop** — All 85 items grouped by category. Tap an item to check it off. Tap the store pill on the right to change where it's bought. The chip strip at the top jumps to a category; the search box filters everything.
+**Shop** — All 90 items grouped by category. Tap an item to check it off. Tap the store pill on the right to change where it's bought. The chip strip at the top jumps to a category; the search box filters everything.
 
-**Order** — Everything currently checked, split by store, with a quantity stepper on each row. "Move" changes the store for this order only, without touching the item's normal default. **Finalize order** saves the whole thing to History with today's date and clears the checkboxes.
+**Order** — Everything currently checked, split by store, with a quantity stepper on each row. "Move" changes the store for this order only, without touching the item's normal default. **Finalize order** saves the whole thing to History with today's date and unchecks the boxes. **Uncheck everything** does the same unchecking without saving anything.
+
+Neither of those buttons removes items from your inventory — the only way an item leaves the list is Delete on the Manage tab.
 
 **History** — Every finalized order, newest first. Tap one to see what was in it.
 
@@ -37,4 +39,13 @@ Finalizing an order records each line as `{ item, category, store, quantity, tim
 
 ## Editing the inventory in bulk
 
-The starting list came from `inventory.xlsx`. For a handful of changes, use the Manage tab. For a large restructuring, edit the `SEED` object near the top of the `<script>` in `index.html` — but note that **Manage → Reset to the original inventory** is what re-reads `SEED`, and it wipes current data, so export a backup first.
+The starting list came from `inventory.xlsx`, and lives in the `SEED` object near the top of the `<script>` in `index.html`.
+
+**`SEED` is only read on a phone that has never opened the app before.** Once she's used it, her list lives in that phone's storage, and editing `SEED` will not push new items to her — that's deliberate, so a code change can never overwrite or delete what she's built up.
+
+So once it's live, add items one of two ways:
+
+- **Manage tab**, on her phone. Best for a few items.
+- **Export → edit the `.json` → Import.** Best for a big batch. The exported file has the full item list in it; add entries and import it back.
+
+Edit `SEED` itself only for changing what a brand-new install starts with.

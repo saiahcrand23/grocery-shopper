@@ -224,6 +224,7 @@ const SEED = {
   "Sauces":["Mustard","Ketchup","Mayo","BBQ Sauce","Jam","Maple Syrup","Hot Sauce"],
   "Spices":["Soy Sauce","Ginger Paste","Salsa","Honey"],
   "Paper Goods":["Toilet Paper","Paper Towels","Liners","Pads","Tissues"],
+  "Food Storage":["Plastic Wrap","Tin Foil","Sandwich Baggies","Large Ziplocks","Small Ziplocks"],
   "Cleaning":["Hand Soap","Dish Soap","Window Cleaner","Toilet Cleaner","Bathroom Spray","Mrs Meyers Solution","Bleach","Disinfectant Wipes","Barkeepers Friend","Dish Detergent","Laundry Detergent","Scrub Daddy"],
   "Parents Toiletries":["Tooth Paste","Shampoo","Body Wash","Conditioner","Face Lotion","Deodorant","Shaving Cream","Razors"],
   "Kids Toiletries":["Detangle Spray","Tooth Paste","Bubble Bath","Shampoo","Body Wash","Lotion"],
@@ -379,9 +380,10 @@ function renderOrder(){
   });
   const total = ids.reduce((a,id)=> a + (state.checked[id].qty||1), 0);
   html += `<button class="btn" id="finalize">Finalize order · ${total} item${total>1?"s":""}</button>
-           <button class="btn warn" id="clear">Clear list without saving</button>
+           <button class="btn warn" id="clear">Uncheck everything</button>
            <p style="font-size:12px;color:var(--muted);text-align:center;margin:14px 4px 0;line-height:1.5">
-             Finalizing saves this order to History with today's date, then clears the checkboxes.</p>`;
+             Finalizing saves this order to History with today's date, then unchecks the boxes.
+             Neither button ever removes items from your inventory.</p>`;
   $("#v-order").innerHTML = html;
 }
 
@@ -433,7 +435,6 @@ function renderManage(){
     <button class="btn ghost" id="copy">Copy backup to clipboard</button>
     <button class="btn ghost" id="imp">Import backup…</button>
     <input type="file" id="file" accept="application/json,.json" hidden>
-    <button class="btn warn" id="reset">Reset to the original inventory</button>
   </div>
 
   <div class="card">
@@ -527,16 +528,13 @@ document.addEventListener("click", e => {
   }
 
   if (t.id === "finalize") finalize();
-  if (t.id === "clear" && confirm("Clear all checked items without saving to History?")){
+  if (t.id === "clear" && confirm("Uncheck all items?\n\nThis only clears this week's checkmarks — your item list stays exactly as it is, and nothing is saved to History.")){
     state.checked = {}; save(); render();
   }
   if (t.id === "add") addItem();
   if (t.id === "exp") exportJSON();
   if (t.id === "copy") copyJSON();
   if (t.id === "imp") $("#file").click();
-  if (t.id === "reset" && confirm("Reset the inventory, checked items and history back to the original list? This cannot be undone.")){
-    state = seed(); save(); render(); toast("Reset to the original inventory");
-  }
 });
 
 document.addEventListener("input", e => {

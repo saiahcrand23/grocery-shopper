@@ -14,7 +14,9 @@ Help my wife not forget to order anything on her grocery pickup order.
 - **Order history**: timestamp, item, store, quantity — logged whenever a week's order is finalized. This is the foundation the future "learning" capability will read from, so it needs to start being recorded from v1 even though nothing uses it yet.
 
 ## Status
-**v1 is built** — see `index.html` (single file, no dependencies) and `README.md` for setup. Everything under "v1 (MVP) Capabilities" below is implemented. Seeded with all 85 items / 13 categories from `inventory.xlsx`.
+**v1 is built** — see `index.html` (single file, no dependencies) and `README.md` for setup. Everything under "v1 (MVP) Capabilities" below is implemented. Seeded with 90 items across 14 categories: the 85 items / 13 categories from `inventory.xlsx`, plus a **Food Storage** category (plastic wrap, tin foil, sandwich baggies, large + small ziplocks).
+
+There is deliberately **no "reset to defaults" button** — nothing in the UI can wipe the item list. Items leave only via an explicit per-item Delete, and restoring a backup is the only bulk overwrite.
 
 ## v1 (MVP) Capabilities
 - Easy scrolling through categories and items, optimized for iPhone.
