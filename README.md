@@ -35,7 +35,11 @@ So: **Manage → Export backup** every so often. That writes a `.json` file with
 
 ## Order history
 
-Finalizing an order records each line as `{ item, category, store, quantity, timestamp }`. Nothing reads that yet, but it's recorded from day one on purpose — it's the raw material for the "how often do you actually buy this" features later. The longer it runs, the more useful it gets.
+Finalizing an order appends one entry to `history`: a timestamp plus a line per item, each recording `{ id, name, category, store, quantity }`.
+
+Lines are deliberately both linked and denormalized. The `id` points back to the item, so renaming something later keeps its history as one continuous record instead of splitting it in two. The `name`, `category`, and `store` are stored as copies of the strings at the time of the order, so a past order still reads correctly even after that item is renamed or deleted — and the store is saved by name, not by position, so reordering the store list can't silently re-attribute old orders.
+
+Nothing reads any of this yet. It's recorded from day one on purpose — it's the raw material for the "how often do you actually buy this" features later, and history can't be backfilled.
 
 ## Editing the inventory in bulk
 

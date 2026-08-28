@@ -588,7 +588,10 @@ function finalize(){
   if (!ids.length) return;
   const lines = ids.map(id => {
     const it = byId(id);
-    return { name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
+    // id links the line back to the item so renames don't split its history;
+    // name/cat/store stay denormalized so a past order still reads correctly
+    // after the item is renamed or deleted.
+    return { id: it.id, name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
   });
   state.history.push({ ts: Date.now(), lines });
   state.checked = {};

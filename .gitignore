@@ -1,2 +1,6 @@
 .DS_Store
 .claude/settings.local.json
+
+# planning docs — kept local, not published with the app
+PLAN.md
+PLAN2.0.md
