@@ -214,7 +214,8 @@ nav svg{width:23px;height:23px}
 const STORES = ["Wal-Mart", "Sam's Club", "Produce Store"];
 const KEY = "grocery-shopper-v1";
 
-/* Seeded from inventory.xlsx. "Toilet Cleaner" corrects a typo in the source sheet. */
+/* Default starting inventory — what a brand-new install begins with.
+   This is the only source of the starting list; replace it to ship a different one. */
 const SEED = {
   "Dairy":["Greek yogurt","Eggs","Milk","Fiesta cheese","Sandwich cheese","Spread Butter","Cooking Butter","Sour Cream"],
   "Meat":["Chicken Breast","Ground Beef","Sandwich Meat"],

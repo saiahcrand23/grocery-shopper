@@ -43,7 +43,7 @@ Nothing reads any of this yet. It's recorded from day one on purpose — it's th
 
 ## Editing the inventory in bulk
 
-The app ships with an example starting list (from `inventory.xlsx`), which lives in the `SEED` object near the top of the `<script>` in `index.html`. Replace it with your own to change what a fresh install begins with.
+The app ships with an example starting list, which lives in the `SEED` object near the top of the `<script>` in `index.html`. That object is the single source of the starting inventory — replace it with your own to change what a fresh install begins with.
 
 **`SEED` is only read on a phone that has never opened the app before.** After first use, the list lives in that phone's storage, and editing `SEED` will not push new items to it — that's deliberate, so a code change can never overwrite or delete what someone has built up.
 
