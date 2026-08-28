@@ -395,7 +395,7 @@ function renderHist(){
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
       <div>No finalized orders yet.</div>
       <div style="margin-top:6px">Every order you finalize is recorded here — that record is what future
-      "what do we usually buy" features will learn from.</div></div>`;
+      "what do you usually buy" features will learn from.</div></div>`;
     return;
   }
   $("#v-hist").innerHTML = state.history.slice().reverse().map(h => {
@@ -429,8 +429,8 @@ function renderManage(){
 
   <div class="card">
     <h2>Backup &amp; restore</h2>
-    <p>Phone storage can get cleared. Export a backup now and then — and after adding
-       her to the Home Screen, which keeps Safari from wiping the app's data.</p>
+    <p>Phone storage can get cleared. Export a backup now and then — and add this app
+       to the Home Screen, which keeps Safari from wiping its data.</p>
     <button class="btn ghost" style="margin-top:0" id="exp">Export backup (.json)</button>
     <button class="btn ghost" id="copy">Copy backup to clipboard</button>
     <button class="btn ghost" id="imp">Import backup…</button>

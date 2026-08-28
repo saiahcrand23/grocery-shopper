@@ -1,8 +1,8 @@
 ## Overview
-An `index.html` grocery ordering app for my wife, stored in GitHub. It holds an inventory of the items we commonly buy at the store, organized by category, and lets her check off what we need to order for the week.
+An `index.html` grocery ordering app, stored in GitHub. It holds an inventory of the items a household commonly buys, organized by category, and lets the shopper check off what they need to order for the week. Built for one household first, but written to be usable by anyone.
 
 ## Problem
-Help my wife not forget to order anything on her grocery pickup order.
+Help the shopper avoid forgetting items when placing a grocery pickup order.
 
 ## Stores
 - Wal-Mart
@@ -26,11 +26,11 @@ There is deliberately **no "reset to defaults" button** — nothing in the UI ca
 - "Finalize order" action that timestamps and logs the finalized list (item, store, quantity) to order history.
 - Static single-file `index.html`, no backend — data persisted client-side (localStorage).
 - **Data durability**, since localStorage alone is fragile (Safari can auto-clear a site's storage after ~7 days of no visits, and a new phone or cleared browsing data wipes it outright):
-  - Prompt/instruct her to **Add to Home Screen** on her iPhone — Safari treats a home-screen web app as installed and exempts it from that auto-clearing, at low implementation cost (manifest + meta tags).
+  - Prompt/instruct the user to **Add to Home Screen** on their iPhone — Safari treats a home-screen web app as installed and exempts it from that auto-clearing, at low implementation cost (manifest + meta tags).
   - An in-app **JSON import/export**, read-only for v1: export current state (inventory, checked items, order history) to a JSON file for backup, and import a JSON file to load/restore inventory or state. No live/automatic connection to Drive or any API — purely manual file-based, so there's no write-back to worry about.
 
 ## Future Capabilities (Backlog)
-- Learn our purchasing patterns (how often we buy an item, where, how many per trip) from the order history logged in v1.
+- Learn the household's purchasing patterns (how often an item is bought, where, how many per trip) from the order history logged in v1.
 - Manual export/import of purchase history from store accounts, if feasible, to help train the pattern-learning.
 - Hook directly into grocery store account purchase history (Walmart, Sam's Club) to feed the learning — **no public API exists for this today**; revisit only if that changes.
 - Auto-add items to store carts (Walmart, Sam's Club) — likely requires browser automation, which carries real ToS-violation / account-ban risk on these sites. An app called Meal Lime reportedly did something similar for Fry's/Kroger. Back burner; only pursue if a legitimate integration path turns up.
