@@ -53,6 +53,7 @@ class OrderLineIn(BaseModel):
 class OrderIn(BaseModel):
     id: str
     lines: list[OrderLineIn]
+    finalized_at: Optional[str] = None
 
 
 @app.get("/api/health")
@@ -198,13 +199,20 @@ def uncheck_item(item_id: str):
         return {"ok": True}
 
 
+@app.delete("/api/checked")
+def uncheck_all():
+    with get_conn() as conn:
+        conn.execute("DELETE FROM checked")
+        return {"ok": True}
+
+
 @app.post("/api/orders")
 def create_order(body: OrderIn):
     with get_conn() as conn:
         existing = conn.execute("SELECT id FROM orders WHERE id=?", (body.id,)).fetchone()
         if existing is not None:
             return {"ok": True, "id": body.id, "already_existed": True}
-        ts = now()
+        ts = body.finalized_at or now()
         conn.execute("INSERT INTO orders (id, finalized_at) VALUES (?, ?)", (body.id, ts))
         for line in body.lines:
             conn.execute(

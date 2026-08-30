@@ -262,6 +262,119 @@ function save(){
   catch{ toast("Couldn't save — storage may be full"); }
 }
 
+/* ---------- server sync ----------
+   localStorage stays the fast, always-available working copy. Every mutation
+   below also enqueues a request for the server; the queue survives reloads
+   and drains itself once the server's reachable. If it never is, the app
+   just keeps working exactly as it always has. */
+const API_BASE = "http://192.168.1.204:8000"; // LAN-only for now; becomes "" (same-origin) after the hosting flip
+const QKEY = "grocery-shopper-queue-v1";
+let queue = loadQueue();
+let flushing = false;
+
+function loadQueue(){ try{ return JSON.parse(localStorage.getItem(QKEY)) || []; } catch { return []; } }
+function saveQueue(){ localStorage.setItem(QKEY, JSON.stringify(queue)); }
+
+function enqueue(method, path, body){
+  // PUT/DELETE are upserts on a specific resource — only the latest matters.
+  // POST (order creation) always keeps every entry; each has a distinct id.
+  if (method !== "POST") queue = queue.filter(q => !(q.method===method && q.path===path));
+  queue.push({ method, path, body });
+  saveQueue();
+  flushQueue();
+}
+
+async function flushQueue(){
+  if (flushing) return;
+  flushing = true;
+  while (queue.length){
+    const op = queue[0];
+    try {
+      const res = await fetch(API_BASE + op.path, {
+        method: op.method,
+        headers: op.body ? { "content-type":"application/json" } : {},
+        body: op.body ? JSON.stringify(op.body) : undefined
+      });
+      if (!res.ok) throw 0;
+      queue.shift(); saveQueue();
+    } catch { break; } // offline or server down — stop, retry on the next enqueue/poll tick
+  }
+  flushing = false;
+}
+
+async function apiCall(method, path, body){
+  const res = await fetch(API_BASE + path, {
+    method,
+    headers: body ? { "content-type":"application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) throw new Error("http " + res.status);
+  return res.status === 204 ? null : res.json();
+}
+
+/* boundary mappers — client uses {id,name,cat,store}, server uses {name,category,default_store} */
+const toServerItem = it => ({ name: it.name, category: it.cat, default_store: it.store });
+const fromServerItem = r => ({ id: r.id, name: r.name, cat: r.category, store: r.default_store });
+const toServerChecked = c => ({ qty: c.qty || 1, store_override: c.store != null ? c.store : null });
+const fromServerChecked = r => ({ qty: r.qty, store: r.store_override });
+const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store: l.store, qty: l.qty });
+const fromServerLine = l => ({ id: l.item_id, name: l.name, cat: l.category, store: l.store, qty: l.qty });
+
+const orderId = () => (crypto.randomUUID ? crypto.randomUUID() : uid()+uid()+uid());
+
+async function pushFullSnapshot(){
+  for (let i = 0; i < state.cats.length; i++)
+    await apiCall("PUT", "/api/categories/" + encodeURIComponent(state.cats[i]), { position: i });
+  for (const it of state.items)
+    await apiCall("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+  for (const [id, c] of Object.entries(state.checked))
+    await apiCall("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(c));
+  // deterministic ids so a retry after a partial failure can't create duplicate orders
+  for (const h of state.history)
+    await apiCall("POST", "/api/orders", { id: "seed-"+h.ts, finalized_at: new Date(h.ts).toISOString(), lines: h.lines.map(toServerLine) });
+}
+
+function adoptServerSnapshot(remote){
+  state.cats = remote.categories.slice().sort((a,b)=>a.position-b.position).map(c=>c.name);
+  state.items = remote.items.map(fromServerItem);
+  state.checked = Object.fromEntries(Object.entries(remote.checked).map(([id,c]) => [id, fromServerChecked(c)]));
+  state.history = remote.history.slice().reverse().map(h => ({ ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) }));
+  save();
+}
+
+async function tryMigrate(){
+  let remote;
+  try { remote = await apiCall("GET", "/api/state"); } catch { return; }
+  if (!remote.items.length && !remote.categories.length){
+    try { await pushFullSnapshot(); } catch { return; } // retry next tick
+  } else {
+    adoptServerSnapshot(remote);
+    render();
+  }
+  state.migratedToServer = true; save();
+}
+
+async function tryForcePush(){
+  try { await pushFullSnapshot(); } catch { return; } // retry next tick
+  state.forcePush = false; state.migratedToServer = true; save();
+}
+
+async function pollTick(){
+  if (state.forcePush) return tryForcePush();
+  if (!state.migratedToServer) return tryMigrate();
+  if (queue.length) return flushQueue(); // retry writes that failed while offline; skip the GET merge until they land
+  let remote;
+  try { remote = await apiCall("GET", "/api/state"); } catch { return; }
+  adoptServerSnapshot(remote);
+  render();
+}
+
+function startSync(){
+  pollTick();
+  setInterval(() => { if (!document.hidden) pollTick(); }, 4000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pollTick(); });
+}
+
 /* ---------- helpers ---------- */
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -468,8 +581,13 @@ document.addEventListener("click", e => {
   const chk = t.closest("[data-check]");
   if (chk){
     const id = chk.dataset.check;
-    if (state.checked[id]) delete state.checked[id];
-    else state.checked[id] = { qty:1, store:null };
+    if (state.checked[id]){
+      delete state.checked[id];
+      enqueue("DELETE", "/api/checked/" + encodeURIComponent(id));
+    } else {
+      state.checked[id] = { qty:1, store:null };
+      enqueue("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(state.checked[id]));
+    }
     save();
     // repaint just this row, keep scroll position
     const row = chk.closest(".row");
@@ -483,8 +601,13 @@ document.addEventListener("click", e => {
     const id = st.dataset.store;
     sheet("Buy this at", STORES, storeOf(id), i => {
       const it = byId(id);
-      if (state.checked[id]) state.checked[id].store = (i === it.store ? null : i);
-      else it.store = i;
+      if (state.checked[id]){
+        state.checked[id].store = (i === it.store ? null : i);
+        enqueue("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(state.checked[id]));
+      } else {
+        it.store = i;
+        enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+      }
       save(); render();
     });
     return;
@@ -493,14 +616,20 @@ document.addEventListener("click", e => {
   const df = t.closest("[data-default]");
   if (df){
     const it = byId(df.dataset.default);
-    sheet("Default store · " + it.name, STORES, it.store, i => { it.store = i; save(); render(); });
+    sheet("Default store · " + it.name, STORES, it.store, i => {
+      it.store = i;
+      enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+      save(); render();
+    });
     return;
   }
 
   const q = t.closest("[data-q]");
   if (q){
-    const c = state.checked[q.dataset.id]; if (!c) return;
+    const id = q.dataset.id;
+    const c = state.checked[id]; if (!c) return;
     c.qty = Math.max(1, (c.qty||1) + (+q.dataset.q));
+    enqueue("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(c));
     save(); renderOrder();
     return;
   }
@@ -523,6 +652,7 @@ document.addEventListener("click", e => {
     if (confirm(`Delete “${it.name}” from the inventory?`)){
       state.items = state.items.filter(i => i.id !== it.id);
       delete state.checked[it.id];
+      enqueue("DELETE", "/api/items/" + encodeURIComponent(it.id));
       save(); render();
     }
     return;
@@ -530,7 +660,7 @@ document.addEventListener("click", e => {
 
   if (t.id === "finalize") finalize();
   if (t.id === "clear" && confirm("Uncheck all items?\n\nThis only clears this week's checkmarks — your item list stays exactly as it is, and nothing is saved to History.")){
-    state.checked = {}; save(); render();
+    state.checked = {}; enqueue("DELETE", "/api/checked"); save(); render();
   }
   if (t.id === "add") addItem();
   if (t.id === "exp") exportJSON();
@@ -554,14 +684,17 @@ document.addEventListener("input", e => {
 document.addEventListener("change", e => {
   if (e.target.id === "nc" && e.target.value === "__new"){
     const name = (prompt("New category name") || "").trim();
-    if (name && !state.cats.includes(name)){ state.cats.push(name); save(); render();
+    if (name && !state.cats.includes(name)){
+      state.cats.push(name);
+      enqueue("PUT", "/api/categories/" + encodeURIComponent(name), { position: state.cats.length - 1 });
+      save(); render();
       const sel = $("#nc"); if (sel) sel.value = name; }
     else e.target.selectedIndex = 0;
   }
   if (e.target.dataset && e.target.dataset.rename !== undefined){
     const it = byId(e.target.dataset.rename);
     const v = e.target.value.trim();
-    if (it && v){ it.name = v; save(); } else if (it) e.target.value = it.name;
+    if (it && v){ it.name = v; enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it)); save(); } else if (it) e.target.value = it.name;
   }
   if (e.target.id === "file"){
     const f = e.target.files[0]; if (!f) return;
@@ -580,7 +713,9 @@ function addItem(){
   if (cat === "__new") return toast("Pick a category first");
   if (state.items.some(i => i.cat===cat && i.name.toLowerCase()===name.toLowerCase()))
     return toast(name + " is already in " + cat);
-  state.items.push({ id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store });
+  const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store };
+  state.items.push(it);
+  enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
   save(); render(); toast(`Added ${name} to ${cat}`);
 }
 
@@ -594,8 +729,10 @@ function finalize(){
     // after the item is renamed or deleted.
     return { id: it.id, name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
   });
-  state.history.push({ ts: Date.now(), lines });
+  const ts = Date.now();
+  state.history.push({ ts, lines });
   state.checked = {};
+  enqueue("POST", "/api/orders", { id: orderId(), finalized_at: new Date(ts).toISOString(), lines: lines.map(toServerLine) });
   save(); tab = "hist"; render(); window.scrollTo(0,0);
   toast("Order saved to History");
 }
@@ -627,12 +764,17 @@ function importJSON(text){
     cats: s.cats || [...new Set(s.items.map(i=>i.cat))],
     items: s.items,
     checked: s.checked || {},
-    history: s.history || []
+    history: s.history || [],
+    migratedToServer: false,
+    forcePush: true   // explicit restore: this backup should overwrite the server, not merge with it
   };
+  queue = []; saveQueue();
   save(); render(); toast("Backup restored");
+  tryForcePush();
 }
 
 render();
+startSync();
 </script>
 </body>
 </html>
