@@ -4,12 +4,12 @@ A small FastAPI service backing the shared inventory, live shared cart, and orde
 
 ## Why the venv and DB live outside this folder
 
-This repo is under Google Drive sync. A SQLite file getting partially synced mid-write is a real corruption risk, and a venv is thousands of pointless files for Drive to churn on. So:
+This repo (`~/grocery-shopper`) used to live under Google Drive sync; it was moved to a plain local path because git itself would intermittently hang on that mount. The DB and venv were kept outside the repo from the start regardless — a SQLite file living inside a directory that `git pull` rewrites is asking for trouble, and a venv is a few hundred MB of files a deploy script has no reason to touch:
 
 - Database: `~/grocery-shopper-data/grocery.db` (override with `GROCERY_DB_PATH`)
 - Virtualenv: `~/.venvs/grocery-shopper/`
 
-Only this `server/` folder's source code is tracked in git and synced via Drive.
+Only this `server/` folder's source code is tracked in git.
 
 ## First-time setup
 
@@ -41,6 +41,16 @@ loginctl enable-linger "$USER"   # starts the user service at boot even with no 
 See the unit file at `~/.config/systemd/user/grocery-server.service`.
 
 Logs: `journalctl --user -u grocery-server -f`
+
+## Deploying updates from another machine
+
+GitHub is the source of truth. Edit and push from wherever, then on this box run:
+
+```bash
+~/grocery-shopper/deploy.sh
+```
+
+It refuses to run if this repo has uncommitted local changes, `git pull --ff-only`s, reinstalls `requirements.txt` into the venv only if that file changed, restarts the `grocery-server` service, and checks `/api/health` afterward. Deliberately manual (not a cron/webhook auto-puller) — there's no test suite yet, so an unreviewed auto-deploy could silently break the live app.
 
 ## API
 
