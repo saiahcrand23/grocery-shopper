@@ -775,6 +775,7 @@ function importJSON(text){
 
 render();
 startSync();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
 </body>
 </html>
