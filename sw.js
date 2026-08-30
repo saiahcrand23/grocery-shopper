@@ -5,7 +5,13 @@
 // only ever matters in the fallback case, so there's nothing to go stale badly.
 const CACHE = "grocery-shell";
 
-self.addEventListener("install", () => {
+self.addEventListener("install", (event) => {
+  // Precache the shell right away — otherwise nothing's cached until a
+  // *second* navigation, since the very first load that registers this
+  // worker already happened before it existed to intercept anything.
+  event.waitUntil(
+    caches.open(CACHE).then((c) => c.add(self.registration.scope)).catch(() => {})
+  );
   self.skipWaiting();
 });
 
