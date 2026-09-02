@@ -15,9 +15,9 @@ Step 4 matters more than it looks. Safari will auto-clear a normal website's sto
 
 **Shop** — All 90 items grouped by category. Tap an item to check it off. Tap the store pill on the right to change where it's bought. The chip strip at the top jumps to a category; the search box filters everything.
 
-**Order** — Everything currently checked, split by store, with a quantity stepper on each row. "Move" changes the store for this order only, without touching the item's normal default. **Finalize order** saves the whole thing to History with today's date and unchecks the boxes. **Uncheck everything** does the same unchecking without saving anything.
+**Order** — Everything currently checked, split by store, with a quantity stepper on each row. "Move" changes the store for this order only, without touching the item's normal default. **Finalize order** saves the whole thing to History with today's date and unchecks the boxes. **Print list** opens the print dialog with a paper-friendly copy grouped by store and then category — handy for a printed list to bring along, or to hand to someone without the app. **Uncheck everything** does the same unchecking without saving anything.
 
-Neither of those buttons removes items from your inventory — the only way an item leaves the list is Delete on the Manage tab.
+None of those buttons removes items from your inventory — the only way an item leaves the list is Delete on the Manage tab.
 
 **History** — Every finalized order, newest first. Tap one to see what was in it.
 
