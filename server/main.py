@@ -1,21 +1,34 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from db import get_conn, init_db
 
 app = FastAPI(title="Grocery Shopper API")
 
-# LAN-only for now, not wired to a real origin yet — tighten before any public exposure.
+ROOT = Path(__file__).resolve().parent.parent  # repo root, one level above server/
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://grocery.crandnet.com"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+def serve_index():
+    return FileResponse(ROOT / "index.html")
+
+
+@app.get("/sw.js")
+def serve_sw():
+    return FileResponse(ROOT / "sw.js", media_type="application/javascript")
 
 
 def now() -> str:
