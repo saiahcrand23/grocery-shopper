@@ -284,7 +284,7 @@ function save(){
    below also enqueues a request for the server; the queue survives reloads
    and drains itself once the server's reachable. If it never is, the app
    just keeps working exactly as it always has. */
-const API_BASE = "http://192.168.1.204:8000"; // LAN-only for now; becomes "" (same-origin) after the hosting flip
+const API_BASE = "http://192.168.1.118:8000"; // LAN-only for now; becomes "" (same-origin) after the hosting flip
 const QKEY = "grocery-shopper-queue-v1";
 let queue = loadQueue();
 let flushing = false;
