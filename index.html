@@ -540,6 +540,7 @@ function renderHist(){
       ${h.lines.map(l=>`<div class="hline">
         <span>${esc(l.name)}${l.qty>1?` <span class="c">×${l.qty}</span>`:""}</span>
         <span class="c">${esc(l.store)}</span></div>`).join("")}
+      <button class="btn ghost" data-print-hist="${h.ts}">Print this order</button>
     </details>`;
   }).join("");
 }
@@ -664,6 +665,9 @@ document.addEventListener("click", e => {
     return;
   }
 
+  const ph = t.closest("[data-print-hist]");
+  if (ph){ printPastOrder(+ph.dataset.printHist); return; }
+
   const del = t.closest("[data-del]");
   if (del){
     const it = byId(del.dataset.del);
@@ -756,25 +760,40 @@ function finalize(){
   toast("Order saved to History");
 }
 
+const printDate = ts => new Date(ts).toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric",year:"numeric"});
+
+/* Takes lines of {name, cat, store, qty} — the shape history already stores —
+   and groups them by store, then category. Current stores/categories lead;
+   anything retired since an old order was placed still prints, appended after,
+   so reprinting a past order can't silently drop lines. */
+function printSheet(dateLabel, lines){
+  const ordered = (known, present) =>
+    [...known.filter(k => present.includes(k)), ...present.filter(p => !known.includes(p))];
+  let html = `<h1>Shopping List</h1><div class="pdate">${esc(dateLabel)}</div>`;
+  for (const store of ordered(STORES, [...new Set(lines.map(l => l.store))])){
+    const rows = lines.filter(l => l.store === store);
+    html += `<div class="pstore"><h2>${esc(store)}</h2>` +
+      ordered(state.cats, [...new Set(rows.map(l => l.cat))]).map(cat =>
+        `<h3>${esc(cat)}</h3><ul>${rows.filter(l => l.cat === cat).map(l =>
+          `<li><span class="pbox"></span>${esc(l.name)}${l.qty>1?` ×${l.qty}`:""}</li>`).join("")}</ul>`
+      ).join("") + `</div>`;
+  }
+  $("#print-area").innerHTML = html;
+  window.print();
+}
+
 function printOrder(){
   const ids = checkedIds();
   if (!ids.length) return;
-  const date = new Date().toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric",year:"numeric"});
-  let html = `<h1>Shopping List</h1><div class="pdate">${esc(date)}</div>`;
-  STORES.forEach((name, si) => {
-    const rows = ids.filter(id => storeOf(id) === si);
-    if (!rows.length) return;
-    const cats = state.cats.filter(c => rows.some(id => byId(id).cat === c));
-    html += `<div class="pstore"><h2>${esc(name)}</h2>` + cats.map(cat => {
-      const items = rows.filter(id => byId(id).cat === cat);
-      return `<h3>${esc(cat)}</h3><ul>${items.map(id => {
-        const it = byId(id), qty = state.checked[id].qty || 1;
-        return `<li><span class="pbox"></span>${esc(it.name)}${qty>1?` ×${qty}`:""}</li>`;
-      }).join("")}</ul>`;
-    }).join("") + `</div>`;
-  });
-  $("#print-area").innerHTML = html;
-  window.print();
+  printSheet(printDate(Date.now()), ids.map(id => {
+    const it = byId(id);
+    return { name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
+  }));
+}
+
+function printPastOrder(ts){
+  const h = state.history.find(o => o.ts === ts);
+  if (h) printSheet(printDate(h.ts), h.lines);
 }
 
 function backup(){
