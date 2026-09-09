@@ -351,12 +351,23 @@ async function pushFullSnapshot(){
     await apiCall("POST", "/api/orders", { id: "seed-"+h.ts, finalized_at: new Date(h.ts).toISOString(), lines: h.lines.map(toServerLine) });
 }
 
+/* Returns whether anything actually changed. The poll runs every few seconds
+   and the answer is almost always "no" — re-rendering regardless would rebuild
+   the view's DOM constantly, which drops focus and wipes whatever's half-typed
+   in a field. Local and server-derived objects are built with matching key
+   order, so comparing serialized snapshots is a reliable equality check. */
 function adoptServerSnapshot(remote){
-  state.cats = remote.categories.slice().sort((a,b)=>a.position-b.position).map(c=>c.name);
-  state.items = remote.items.map(fromServerItem);
-  state.checked = Object.fromEntries(Object.entries(remote.checked).map(([id,c]) => [id, fromServerChecked(c)]));
-  state.history = remote.history.slice().reverse().map(h => ({ ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) }));
+  const next = {
+    cats: remote.categories.slice().sort((a,b)=>a.position-b.position).map(c=>c.name),
+    items: remote.items.map(fromServerItem),
+    checked: Object.fromEntries(Object.entries(remote.checked).map(([id,c]) => [id, fromServerChecked(c)])),
+    history: remote.history.slice().reverse().map(h => ({ ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) }))
+  };
+  const current = { cats: state.cats, items: state.items, checked: state.checked, history: state.history };
+  if (JSON.stringify(next) === JSON.stringify(current)) return false;
+  Object.assign(state, next);
   save();
+  return true;
 }
 
 async function tryMigrate(){
@@ -376,14 +387,22 @@ async function tryForcePush(){
   state.forcePush = false; state.migratedToServer = true; save();
 }
 
+// Typing counts as work in progress: a pulled-in change would rebuild the DOM
+// and take the focused field (and the keyboard on iOS) with it. Outgoing writes
+// above still flush — only the pull-and-repaint waits for the field to blur.
+const isEditing = () => {
+  const a = document.activeElement;
+  return !!a && ["INPUT","TEXTAREA","SELECT"].includes(a.tagName);
+};
+
 async function pollTick(){
   if (state.forcePush) return tryForcePush();
   if (!state.migratedToServer) return tryMigrate();
   if (queue.length) return flushQueue(); // retry writes that failed while offline; skip the GET merge until they land
+  if (isEditing()) return;
   let remote;
   try { remote = await apiCall("GET", "/api/state"); } catch { return; }
-  adoptServerSnapshot(remote);
-  render();
+  if (adoptServerSnapshot(remote)) render();
 }
 
 function startSync(){
