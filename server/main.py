@@ -219,6 +219,17 @@ def uncheck_all():
         return {"ok": True}
 
 
+def _write_lines(conn, order_id: str, lines):
+    for line in lines:
+        conn.execute(
+            """
+            INSERT INTO order_lines (order_id, item_id, name, category, store, qty)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (order_id, line.item_id, line.name, line.category, line.store, line.qty),
+        )
+
+
 @app.post("/api/orders")
 def create_order(body: OrderIn):
     with get_conn() as conn:
@@ -227,16 +238,31 @@ def create_order(body: OrderIn):
             return {"ok": True, "id": body.id, "already_existed": True}
         ts = body.finalized_at or now()
         conn.execute("INSERT INTO orders (id, finalized_at) VALUES (?, ?)", (body.id, ts))
-        for line in body.lines:
-            conn.execute(
-                """
-                INSERT INTO order_lines (order_id, item_id, name, category, store, qty)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (body.id, line.item_id, line.name, line.category, line.store, line.qty),
-            )
+        _write_lines(conn, body.id, body.lines)
         conn.execute("DELETE FROM checked")
         return {"ok": True, "id": body.id, "finalized_at": ts}
+
+
+@app.put("/api/orders/{order_id}")
+def replace_order(order_id: str, body: OrderIn):
+    with get_conn() as conn:
+        row = conn.execute("SELECT finalized_at FROM orders WHERE id=?", (order_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="order not found")
+        ts = body.finalized_at or row["finalized_at"]
+        conn.execute("UPDATE orders SET finalized_at=? WHERE id=?", (ts, order_id))
+        conn.execute("DELETE FROM order_lines WHERE order_id=?", (order_id,))
+        _write_lines(conn, order_id, body.lines)
+        return {"ok": True, "id": order_id, "finalized_at": ts}
+
+
+@app.delete("/api/orders/{order_id}")
+def delete_order(order_id: str):
+    with get_conn() as conn:
+        # Lines first: foreign_keys is ON, so the parent row can't go while they exist.
+        conn.execute("DELETE FROM order_lines WHERE order_id=?", (order_id,))
+        conn.execute("DELETE FROM orders WHERE id=?", (order_id,))
+        return {"ok": True}
 
 
 @app.get("/api/orders")

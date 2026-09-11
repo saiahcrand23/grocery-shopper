@@ -170,6 +170,7 @@ nav svg{width:23px;height:23px}
   position:fixed;left:8px;right:8px;bottom:8px;z-index:41;background:var(--card);
   border-radius:16px;padding:8px;transform:translateY(120%);transition:transform .22s ease;
   padding-bottom:calc(8px + env(safe-area-inset-bottom));
+  max-height:70vh;overflow-y:auto;  /* the item picker lists the whole inventory */
 }
 .sheet.on{transform:none}
 .sheet h3{margin:10px 12px 8px;font-size:13px;color:var(--muted);font-weight:600;
@@ -271,6 +272,9 @@ function load(){
     if (!s || !Array.isArray(s.items)) return seed();
     s.checked = s.checked || {}; s.history = s.history || [];
     s.cats = s.cats || [...new Set(s.items.map(i=>i.cat))];
+    // Orders saved before they were editable carry no id. Derive the same one
+    // pushFullSnapshot would send, so a never-synced history stays addressable.
+    s.history = s.history.map(h => h.id ? h : { id: "seed-"+h.ts, ts: h.ts, lines: h.lines });
     return s;
   } catch { return seed(); }
 }
@@ -312,7 +316,10 @@ async function flushQueue(){
         headers: op.body ? { "content-type":"application/json" } : {},
         body: op.body ? JSON.stringify(op.body) : undefined
       });
-      if (!res.ok) throw 0;
+      // A 4xx won't succeed on retry — the row is already gone, typically
+      // deleted from another device. Drop it; leaving it at the head of the
+      // queue would silently jam every write behind it, forever.
+      if (!res.ok && !(res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429)) throw 0;
       queue.shift(); saveQueue();
     } catch { break; } // offline or server down — stop, retry on the next enqueue/poll tick
   }
@@ -348,7 +355,7 @@ async function pushFullSnapshot(){
     await apiCall("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(c));
   // deterministic ids so a retry after a partial failure can't create duplicate orders
   for (const h of state.history)
-    await apiCall("POST", "/api/orders", { id: "seed-"+h.ts, finalized_at: new Date(h.ts).toISOString(), lines: h.lines.map(toServerLine) });
+    await apiCall("POST", "/api/orders", { id: h.id || "seed-"+h.ts, finalized_at: new Date(h.ts).toISOString(), lines: h.lines.map(toServerLine) });
 }
 
 /* Returns whether anything actually changed. The poll runs every few seconds
@@ -361,7 +368,7 @@ function adoptServerSnapshot(remote){
     cats: remote.categories.slice().sort((a,b)=>a.position-b.position).map(c=>c.name),
     items: remote.items.map(fromServerItem),
     checked: Object.fromEntries(Object.entries(remote.checked).map(([id,c]) => [id, fromServerChecked(c)])),
-    history: remote.history.slice().reverse().map(h => ({ ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) }))
+    history: remote.history.slice().reverse().map(h => ({ id: h.id, ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) }))
   };
   const current = { cats: state.cats, items: state.items, checked: state.checked, history: state.history };
   if (JSON.stringify(next) === JSON.stringify(current)) return false;
@@ -452,6 +459,7 @@ const ICONS = {
 };
 const TABS = [["shop","Shop"],["order","Order"],["hist","History"],["manage","Manage"]];
 let tab = "shop";
+let editingOrder = null; // id of the past order currently open for editing
 
 function renderTabs(){
   const n = checkedIds().length;
@@ -549,19 +557,62 @@ function renderHist(){
       "what do you usually buy" features will learn from.</div></div>`;
     return;
   }
-  $("#v-hist").innerHTML = state.history.slice().reverse().map(h => {
-    const d = new Date(h.ts);
-    const date = d.toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric",year:"numeric"});
+  // Sorted rather than just reversed: editing a date reorders history, so
+  // insertion order can no longer be trusted to match chronology.
+  $("#v-hist").innerHTML = state.history.slice().sort((a,b)=>b.ts-a.ts).map(h => {
+    const date = new Date(h.ts).toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric",year:"numeric"});
     const n = h.lines.reduce((a,l)=>a+l.qty,0);
-    return `<details class="hcard"><summary>
+    return `<details class="hcard" ${editingOrder===h.id?"open":""}><summary>
         <span class="d">${esc(date)}</span>
         <span class="c">${n} item${n>1?"s":""} ›</span></summary>
-      ${h.lines.map(l=>`<div class="hline">
-        <span>${esc(l.name)}${l.qty>1?` <span class="c">×${l.qty}</span>`:""}</span>
-        <span class="c">${esc(l.store)}</span></div>`).join("")}
-      <button class="btn ghost" data-print-hist="${h.ts}">Print this order</button>
+      ${editingOrder===h.id ? editBody(h) : readBody(h)}
     </details>`;
   }).join("");
+}
+
+function readBody(h){
+  return h.lines.map(l=>`<div class="hline">
+      <span>${esc(l.name)}${l.qty>1?` <span class="c">×${l.qty}</span>`:""}</span>
+      <span class="c">${esc(l.store)}</span></div>`).join("") +
+    `<button class="btn ghost" data-print-hist="${h.id}">Print this order</button>
+     <button class="btn ghost" data-hedit="${h.id}">Edit this order</button>`;
+}
+
+function editBody(h){
+  return `<div class="list" style="margin-top:10px">${h.lines.map((l,i)=>{
+      const si = STORES.indexOf(l.store);
+      return `<div class="row">
+        <span class="grow"><span class="name">${esc(l.name)}</span><span class="meta">${esc(l.cat)}</span></span>
+        <span class="qty">
+          <button data-hq="-1" data-oid="${h.id}" data-li="${i}">−</button>
+          <b>${l.qty||1}</b>
+          <button data-hq="1" data-oid="${h.id}" data-li="${i}">+</button>
+        </span>
+        <button class="store s${si<0?0:si}" data-hstore="${h.id}" data-li="${i}">${esc(l.store)}</button>
+        <button class="del" data-hrm="${h.id}" data-li="${i}">Remove</button>
+      </div>`;
+    }).join("") || `<div class="hline"><span class="c">No items left in this order.</span></div>`}</div>
+    <label class="meta" style="display:block;margin:14px 2px 4px">Date of this order</label>
+    <input class="field" type="date" data-hdate="${h.id}" value="${dateInputValue(h.ts)}">
+    <button class="mini" data-hadd="${h.id}">Add an item</button>
+    <button class="btn ghost" data-hdone="${h.id}">Done editing</button>
+    <button class="btn warn" data-hdel="${h.id}">Delete this order</button>`;
+}
+
+// Local Y-M-D. toISOString would shift across the UTC boundary and show the
+// wrong day for anyone west of it.
+function dateInputValue(ts){
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+
+const histOrder = id => state.history.find(h => h.id === id);
+
+function saveHistOrder(h){
+  save();
+  enqueue("PUT", "/api/orders/" + encodeURIComponent(h.id),
+    { id: h.id, finalized_at: new Date(h.ts).toISOString(), lines: h.lines.map(toServerLine) });
+  renderHist();
 }
 
 /* ---------- manage view ---------- */
@@ -685,7 +736,70 @@ document.addEventListener("click", e => {
   }
 
   const ph = t.closest("[data-print-hist]");
-  if (ph){ printPastOrder(+ph.dataset.printHist); return; }
+  if (ph){ printPastOrder(ph.dataset.printHist); return; }
+
+  const he = t.closest("[data-hedit]");
+  if (he){ editingOrder = he.dataset.hedit; renderHist(); return; }
+
+  const hdone = t.closest("[data-hdone]");
+  if (hdone){ editingOrder = null; renderHist(); return; }
+
+  const hq = t.closest("[data-hq]");
+  if (hq){
+    const h = histOrder(hq.dataset.oid), l = h && h.lines[+hq.dataset.li];
+    if (!l) return;
+    l.qty = Math.max(1, (l.qty||1) + (+hq.dataset.hq));
+    saveHistOrder(h);
+    return;
+  }
+
+  const hstore = t.closest("[data-hstore]");
+  if (hstore){
+    const h = histOrder(hstore.dataset.hstore), i = +hstore.dataset.li, l = h && h.lines[i];
+    if (!l) return;
+    sheet("Bought at · " + l.name, STORES, STORES.indexOf(l.store), pick => {
+      l.store = STORES[pick];
+      saveHistOrder(h);
+    });
+    return;
+  }
+
+  const hrm = t.closest("[data-hrm]");
+  if (hrm){
+    const h = histOrder(hrm.dataset.hrm);
+    if (!h) return;
+    h.lines.splice(+hrm.dataset.li, 1);
+    saveHistOrder(h);
+    return;
+  }
+
+  const hadd = t.closest("[data-hadd]");
+  if (hadd){
+    const h = histOrder(hadd.dataset.hadd);
+    if (!h) return;
+    const pool = state.items.filter(it => !h.lines.some(l => l.id === it.id));
+    if (!pool.length) return toast("Every item is already on this order");
+    sheet("Add to this order", pool.map(it => `${it.name} · ${it.cat}`), -1, pick => {
+      const it = pool[pick];
+      h.lines.push({ id: it.id, name: it.name, cat: it.cat, store: STORES[it.store], qty: 1 });
+      saveHistOrder(h);
+    });
+    return;
+  }
+
+  const hdel = t.closest("[data-hdel]");
+  if (hdel){
+    const h = histOrder(hdel.dataset.hdel);
+    if (!h) return;
+    const when = new Date(h.ts).toLocaleDateString();
+    if (!confirm(`Delete the order from ${when}?\n\nThis removes it from History for good. Your item list is not affected.`)) return;
+    state.history = state.history.filter(o => o.id !== h.id);
+    enqueue("DELETE", "/api/orders/" + encodeURIComponent(h.id));
+    editingOrder = null;
+    save(); render();
+    toast("Order deleted");
+    return;
+  }
 
   const del = t.closest("[data-del]");
   if (del){
@@ -738,6 +852,17 @@ document.addEventListener("change", e => {
     const v = e.target.value.trim();
     if (it && v){ it.name = v; enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it)); save(); } else if (it) e.target.value = it.name;
   }
+  if (e.target.dataset && e.target.dataset.hdate !== undefined){
+    const h = histOrder(e.target.dataset.hdate);
+    const [y,m,d] = e.target.value.split("-").map(Number);
+    if (!h || !y) return;
+    // Keep the original time of day: it preserves ordering within a day and
+    // stops two orders back-dated to the same date from landing on one ts.
+    const t = new Date(h.ts); t.setFullYear(y, m-1, d);
+    h.ts = t.getTime();
+    saveHistOrder(h);
+    return;
+  }
   if (e.target.id === "file"){
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
@@ -771,10 +896,10 @@ function finalize(){
     // after the item is renamed or deleted.
     return { id: it.id, name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
   });
-  const ts = Date.now();
-  state.history.push({ ts, lines });
+  const ts = Date.now(), id = orderId();
+  state.history.push({ id, ts, lines });
   state.checked = {};
-  enqueue("POST", "/api/orders", { id: orderId(), finalized_at: new Date(ts).toISOString(), lines: lines.map(toServerLine) });
+  enqueue("POST", "/api/orders", { id, finalized_at: new Date(ts).toISOString(), lines: lines.map(toServerLine) });
   save(); tab = "hist"; render(); window.scrollTo(0,0);
   toast("Order saved to History");
 }
@@ -810,8 +935,8 @@ function printOrder(){
   }));
 }
 
-function printPastOrder(ts){
-  const h = state.history.find(o => o.ts === ts);
+function printPastOrder(id){
+  const h = histOrder(id);
   if (h) printSheet(printDate(h.ts), h.lines);
 }
 
