@@ -21,14 +21,24 @@ app.add_middleware(
 )
 
 
+# Without this the responses carry only an ETag/Last-Modified, which lets a
+# browser apply heuristic freshness and serve the shell from its HTTP cache for
+# hours without asking. The service worker's own fetch goes through that cache
+# too, so it would re-cache the stale copy and the installed app would sit on an
+# old build while online. "no-cache" means revalidate, not "don't store" — the
+# ETag turns each check into a cheap 304, and offline still serves from the
+# service worker's Cache Storage.
+SHELL_HEADERS = {"cache-control": "no-cache"}
+
+
 @app.get("/")
 def serve_index():
-    return FileResponse(ROOT / "index.html")
+    return FileResponse(ROOT / "index.html", headers=SHELL_HEADERS)
 
 
 @app.get("/sw.js")
 def serve_sw():
-    return FileResponse(ROOT / "sw.js", media_type="application/javascript")
+    return FileResponse(ROOT / "sw.js", media_type="application/javascript", headers=SHELL_HEADERS)
 
 
 def now() -> str:
