@@ -136,6 +136,19 @@ main{padding:0 16px calc(96px + env(safe-area-inset-bottom))}
 .card p{font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.45}
 .field{width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--line);
   background:var(--bg);margin-bottom:9px;font-size:16px}
+/* iOS sizes a native date control by its own rules, ignoring width:100% and
+   spilling past the card's padding. Stripping the native appearance makes it
+   lay out like every other field; tapping still opens the system picker. */
+input[type="date"].field{-webkit-appearance:none;appearance:none;
+  text-align:left;font-family:inherit;min-width:0}
+
+/* Four controls on one line squeezes an item's name down to a few characters
+   on a phone, so in the order editor the name gets a line of its own. */
+.erow{padding:11px 14px;border-bottom:1px solid var(--line)}
+.erow:last-child{border-bottom:0}
+.ectl{display:flex;align-items:center;gap:10px;margin-top:9px}
+.ectl .del{margin-left:auto}
+
 select.field{-webkit-appearance:none;appearance:none;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8'><path d='M1 1l5 5 5-5' stroke='%236b7280' stroke-width='2' fill='none'/></svg>");
   background-repeat:no-repeat;background-position:right 13px center}
@@ -581,17 +594,19 @@ function readBody(h){
 function editBody(h){
   return `<div class="list" style="margin-top:10px">${h.lines.map((l,i)=>{
       const si = STORES.indexOf(l.store);
-      return `<div class="row">
-        <span class="grow"><span class="name">${esc(l.name)}</span><span class="meta">${esc(l.cat)}</span></span>
-        <span class="qty">
-          <button data-hq="-1" data-oid="${h.id}" data-li="${i}">−</button>
-          <b>${l.qty||1}</b>
-          <button data-hq="1" data-oid="${h.id}" data-li="${i}">+</button>
-        </span>
-        <button class="store s${si<0?0:si}" data-hstore="${h.id}" data-li="${i}">${esc(l.store)}</button>
-        <button class="del" data-hrm="${h.id}" data-li="${i}">Remove</button>
+      return `<div class="erow">
+        <span class="name">${esc(l.name)}</span><span class="meta">${esc(l.cat)}</span>
+        <div class="ectl">
+          <span class="qty">
+            <button data-hq="-1" data-oid="${h.id}" data-li="${i}">−</button>
+            <b>${l.qty||1}</b>
+            <button data-hq="1" data-oid="${h.id}" data-li="${i}">+</button>
+          </span>
+          <button class="store s${si<0?0:si}" data-hstore="${h.id}" data-li="${i}">${esc(l.store)}</button>
+          <button class="del" data-hrm="${h.id}" data-li="${i}">Remove</button>
+        </div>
       </div>`;
-    }).join("") || `<div class="hline"><span class="c">No items left in this order.</span></div>`}</div>
+    }).join("") || `<div class="erow"><span class="c">No items left in this order.</span></div>`}</div>
     <label class="meta" style="display:block;margin:14px 2px 4px">Date of this order</label>
     <input class="field" type="date" data-hdate="${h.id}" value="${dateInputValue(h.ts)}">
     <button class="mini" data-hadd="${h.id}">Add an item</button>
