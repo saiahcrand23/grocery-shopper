@@ -33,6 +33,11 @@ body{
   padding-top:env(safe-area-inset-top);
   overscroll-behavior-y:none;
   -webkit-text-size-adjust:100%;
+  /* A page shorter than the screen leaves the fixed tab bar stranded partway
+     up, because bottom:0 resolves against a layout viewport that stops at the
+     content. Filling the viewport keeps the bar on the bottom edge either way. */
+  min-height:100vh;
+  min-height:100dvh;
 }
 button,input,select{font:inherit;color:inherit}
 button{background:none;border:0;padding:0;cursor:pointer}
