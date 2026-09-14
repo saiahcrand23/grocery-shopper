@@ -73,7 +73,14 @@ main{padding:0 16px calc(96px + env(safe-area-inset-bottom))}
 
 /* ---- sections + rows ---- */
 .cat{margin:18px 0 7px;font-size:13px;font-weight:700;text-transform:uppercase;
-  letter-spacing:.05em;color:var(--muted)}
+  letter-spacing:.05em;color:var(--muted);
+  display:flex;align-items:center;justify-content:space-between;gap:10px}
+.catname{font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;
+  padding:2px 0;text-align:left}
+/* Flag pills sit at store-pill size; colour alone carries on vs off. */
+.flag{flex:0 0 auto;font-size:11px;font-weight:700;padding:5px 9px;border-radius:7px;
+  border:1px solid var(--line);color:var(--muted);letter-spacing:.01em;text-transform:none}
+.flag.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .list{background:var(--card);border-radius:13px;overflow:hidden;box-shadow:var(--shadow)}
 .row{
   display:flex;align-items:center;gap:12px;padding:0 14px;min-height:52px;
@@ -277,8 +284,8 @@ function seed(){
   const items = [];
   for (const [cat, names] of Object.entries(SEED))
     for (const n of names)
-      items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0 });
-  return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[] };
+      items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0, staple:false });
+  return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[], interchangeable:[] };
 }
 
 let state = load();
@@ -293,6 +300,11 @@ function load(){
     // Orders saved before they were editable carry no id. Derive the same one
     // pushFullSnapshot would send, so a never-synced history stays addressable.
     s.history = s.history.map(h => h.id ? h : { id: "seed-"+h.ts, ts: h.ts, lines: h.lines });
+    // Items saved before staples existed lack the key. Append it (never insert
+    // it mid-object) so the shape matches what the server round-trip produces —
+    // otherwise every poll reads as a change and repaints over what's being typed.
+    s.items = s.items.map(i => "staple" in i ? i : { ...i, staple:false });
+    s.interchangeable = s.interchangeable || [];
     return s;
   } catch { return seed(); }
 }
@@ -355,8 +367,8 @@ async function apiCall(method, path, body){
 }
 
 /* boundary mappers — client uses {id,name,cat,store}, server uses {name,category,default_store} */
-const toServerItem = it => ({ name: it.name, category: it.cat, default_store: it.store });
-const fromServerItem = r => ({ id: r.id, name: r.name, cat: r.category, store: r.default_store });
+const toServerItem = it => ({ name: it.name, category: it.cat, default_store: it.store, staple: !!it.staple });
+const fromServerItem = r => ({ id: r.id, name: r.name, cat: r.category, store: r.default_store, staple: !!r.staple });
 const toServerChecked = c => ({ qty: c.qty || 1, store_override: c.store != null ? c.store : null });
 const fromServerChecked = r => ({ qty: r.qty, store: r.store_override });
 const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store: l.store, qty: l.qty });
@@ -386,9 +398,12 @@ function adoptServerSnapshot(remote){
     cats: remote.categories.slice().sort((a,b)=>a.position-b.position).map(c=>c.name),
     items: remote.items.map(fromServerItem),
     checked: Object.fromEntries(Object.entries(remote.checked).map(([id,c]) => [id, fromServerChecked(c)])),
-    history: remote.history.slice().reverse().map(h => ({ id: h.id, ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) }))
+    history: remote.history.slice().reverse().map(h => ({ id: h.id, ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) })),
+    // Sorted so this serializes identically however it was assembled.
+    interchangeable: remote.categories.filter(c => c.interchangeable).map(c => c.name).sort()
   };
-  const current = { cats: state.cats, items: state.items, checked: state.checked, history: state.history };
+  const current = { cats: state.cats, items: state.items, checked: state.checked,
+                    history: state.history, interchangeable: state.interchangeable };
   if (JSON.stringify(next) === JSON.stringify(current)) return false;
   Object.assign(state, next);
   save();
@@ -662,14 +677,23 @@ function renderManage(){
 
   <div class="card">
     <h2>All items · ${state.items.length}</h2>
-    <p>Tap a name to rename it, the store pill to change its default store.</p>
+    <p>Tap a name to rename it, the store pill to change its default store.
+       <b>Staple</b> marks something you always want in stock. On a category,
+       <b>Any item counts</b> means the items stand in for each other — you want
+       some fruit each week, not one specific fruit.</p>
     ${cats.filter(c=>state.items.some(i=>i.cat===c)).map(c=>
-      `<div class="cat">${esc(c)}</div>
+      `<div class="cat">
+         <button class="catname" data-catrename="${esc(c)}">${esc(c)}</button>
+         <button class="flag ${state.interchangeable.includes(c)?"on":""}" data-catany="${esc(c)}">Any item counts</button>
+       </div>
        <div class="list">${state.items.filter(i=>i.cat===c).map(i=>{
-         return `<div class="row">
+         return `<div class="erow">
            <input class="editname" value="${esc(i.name)}" data-rename="${i.id}">
-           <button class="store s${i.store}" data-default="${i.id}">${esc(STORES[i.store])}</button>
-           <button class="del" data-del="${i.id}">Delete</button>
+           <div class="ectl">
+             <button class="store s${i.store}" data-default="${i.id}">${esc(STORES[i.store])}</button>
+             <button class="flag ${i.staple?"on":""}" data-staple="${i.id}">Staple</button>
+             <button class="del" data-del="${i.id}">Delete</button>
+           </div>
          </div>`;}).join("")}</div>`).join("")}
   </div>`;
 }
@@ -818,6 +842,46 @@ document.addEventListener("click", e => {
     editingOrder = null;
     save(); render();
     toast("Order deleted");
+    return;
+  }
+
+  const stp = t.closest("[data-staple]");
+  if (stp){
+    const it = byId(stp.dataset.staple);
+    if (!it) return;
+    it.staple = !it.staple;
+    enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+    save(); renderManage();
+    return;
+  }
+
+  const cany = t.closest("[data-catany]");
+  if (cany){
+    const c = cany.dataset.catany;
+    const on = !state.interchangeable.includes(c);
+    state.interchangeable = (on ? state.interchangeable.concat(c)
+                                : state.interchangeable.filter(x => x !== c)).sort();
+    enqueue("PUT", "/api/categories/" + encodeURIComponent(c), { interchangeable: on });
+    save(); renderManage();
+    return;
+  }
+
+  const cren = t.closest("[data-catrename]");
+  if (cren){
+    const old = cren.dataset.catrename;
+    const name = (prompt("Rename category", old) || "").trim();
+    if (!name || name === old) return;
+    if (state.cats.some(c => c !== old && c.toLowerCase() === name.toLowerCase()))
+      return toast("There's already a category called " + name);
+    state.cats = state.cats.map(c => c === old ? name : c);
+    state.items.forEach(i => { if (i.cat === old) i.cat = name; });
+    state.interchangeable = state.interchangeable.map(c => c === old ? name : c).sort();
+    if (activeCat === old) activeCat = name;
+    // One server call moves the category and every item in it — see the
+    // rename endpoint. Past orders keep the old name on purpose.
+    enqueue("POST", "/api/categories/" + encodeURIComponent(old) + "/rename", { new_name: name });
+    save(); render();
+    toast(`Renamed to ${name}`);
     return;
   }
 

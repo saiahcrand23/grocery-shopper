@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS categories (
   name TEXT PRIMARY KEY,
   position INTEGER NOT NULL,
   updated_at TEXT NOT NULL,
-  deleted_at TEXT
+  deleted_at TEXT,
+  interchangeable INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -18,7 +19,8 @@ CREATE TABLE IF NOT EXISTS items (
   category TEXT NOT NULL,
   default_store INTEGER NOT NULL,
   updated_at TEXT NOT NULL,
-  deleted_at TEXT
+  deleted_at TEXT,
+  staple INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS checked (
@@ -45,10 +47,21 @@ CREATE TABLE IF NOT EXISTS order_lines (
 """
 
 
+def _ensure_column(conn, table, column, decl):
+    """CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns
+    added after a database was first created need an explicit ALTER. Table and
+    column names here are literals from this module, never request input."""
+    existing = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript(SCHEMA)
+        _ensure_column(conn, "items", "staple", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "categories", "interchangeable", "INTEGER NOT NULL DEFAULT 0")
 
 
 @contextmanager

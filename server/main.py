@@ -54,10 +54,18 @@ class ItemIn(BaseModel):
     name: str
     category: str
     default_store: int
+    # None means "leave as-is". A False default would clear the flag on every
+    # write that doesn't mention it.
+    staple: Optional[bool] = None
 
 
 class CategoryIn(BaseModel):
     position: Optional[int] = None
+    interchangeable: Optional[bool] = None
+
+
+class RenameIn(BaseModel):
+    new_name: str
 
 
 class CheckedIn(BaseModel):
@@ -86,14 +94,14 @@ def health():
 
 def _items(conn):
     rows = conn.execute(
-        "SELECT id, name, category, default_store, updated_at FROM items WHERE deleted_at IS NULL"
+        "SELECT id, name, category, default_store, staple, updated_at FROM items WHERE deleted_at IS NULL"
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def _categories(conn):
     rows = conn.execute(
-        "SELECT name, position FROM categories WHERE deleted_at IS NULL ORDER BY position"
+        "SELECT name, position, interchangeable FROM categories WHERE deleted_at IS NULL ORDER BY position"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -136,17 +144,23 @@ def list_items():
 def upsert_item(item_id: str, body: ItemIn):
     with get_conn() as conn:
         ts = now()
+        if body.staple is None:
+            prev = conn.execute("SELECT staple FROM items WHERE id=?", (item_id,)).fetchone()
+            staple = prev["staple"] if prev else 0
+        else:
+            staple = int(body.staple)
         conn.execute(
             """
-            INSERT INTO items (id, name, category, default_store, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, NULL)
+            INSERT INTO items (id, name, category, default_store, staple, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name, category=excluded.category,
-              default_store=excluded.default_store, updated_at=excluded.updated_at, deleted_at=NULL
+              default_store=excluded.default_store, staple=excluded.staple,
+              updated_at=excluded.updated_at, deleted_at=NULL
             """,
-            (item_id, body.name, body.category, body.default_store, ts),
+            (item_id, body.name, body.category, body.default_store, staple, ts),
         )
-        row = conn.execute("SELECT id, name, category, default_store, updated_at FROM items WHERE id=?", (item_id,)).fetchone()
+        row = conn.execute("SELECT id, name, category, default_store, staple, updated_at FROM items WHERE id=?", (item_id,)).fetchone()
         return dict(row)
 
 
@@ -171,24 +185,67 @@ def list_categories():
 def upsert_category(name: str, body: CategoryIn = CategoryIn()):
     with get_conn() as conn:
         ts = now()
+        existing = conn.execute("SELECT position, interchangeable FROM categories WHERE name=?", (name,)).fetchone()
         if body.position is not None:
             position = body.position
+        elif existing is not None:
+            position = existing["position"]
         else:
-            existing = conn.execute("SELECT position FROM categories WHERE name=?", (name,)).fetchone()
-            if existing is not None:
-                position = existing["position"]
-            else:
-                row = conn.execute("SELECT MAX(position) AS m FROM categories").fetchone()
-                position = (row["m"] + 1) if row["m"] is not None else 0
+            row = conn.execute("SELECT MAX(position) AS m FROM categories").fetchone()
+            position = (row["m"] + 1) if row["m"] is not None else 0
+        if body.interchangeable is not None:
+            interchangeable = int(body.interchangeable)
+        else:
+            interchangeable = existing["interchangeable"] if existing else 0
         conn.execute(
             """
-            INSERT INTO categories (name, position, updated_at, deleted_at)
-            VALUES (?, ?, ?, NULL)
-            ON CONFLICT(name) DO UPDATE SET position=excluded.position, updated_at=excluded.updated_at, deleted_at=NULL
+            INSERT INTO categories (name, position, interchangeable, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, NULL)
+            ON CONFLICT(name) DO UPDATE SET position=excluded.position,
+              interchangeable=excluded.interchangeable, updated_at=excluded.updated_at, deleted_at=NULL
             """,
-            (name, position, ts),
+            (name, position, interchangeable, ts),
         )
-        return {"name": name, "position": position}
+        return {"name": name, "position": position, "interchangeable": interchangeable}
+
+
+@app.post("/api/categories/{name}/rename")
+def rename_category(name: str, body: RenameIn):
+    """Renaming moves every item in the category, so it happens here in one
+    transaction rather than as a category write plus one write per item — a
+    partial failure would strand items across two category names.
+
+    order_lines keep the old category string on purpose: they're snapshots of
+    what a past order looked like, and analysis joins them back to items by
+    item_id anyway."""
+    new_name = body.new_name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="new_name is required")
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT position, interchangeable FROM categories WHERE name=? AND deleted_at IS NULL", (name,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="category not found")
+        if new_name != name:
+            clash = conn.execute(
+                "SELECT name FROM categories WHERE name=? AND deleted_at IS NULL", (new_name,)
+            ).fetchone()
+            if clash is not None:
+                raise HTTPException(status_code=409, detail="a category with that name already exists")
+        ts = now()
+        conn.execute(
+            "INSERT INTO categories (name, position, interchangeable, updated_at, deleted_at) VALUES (?, ?, ?, ?, NULL)"
+            " ON CONFLICT(name) DO UPDATE SET position=excluded.position,"
+            " interchangeable=excluded.interchangeable, updated_at=excluded.updated_at, deleted_at=NULL",
+            (new_name, row["position"], row["interchangeable"], ts),
+        )
+        moved = conn.execute(
+            "UPDATE items SET category=?, updated_at=? WHERE category=?", (new_name, ts, name)
+        ).rowcount
+        if new_name != name:
+            conn.execute("DELETE FROM categories WHERE name=?", (name,))
+        return {"ok": True, "name": new_name, "items_moved": moved}
 
 
 @app.get("/api/checked")
