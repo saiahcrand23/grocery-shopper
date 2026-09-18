@@ -131,6 +131,12 @@ main{padding:0 16px calc(96px + env(safe-area-inset-bottom))}
 .btn.ghost{background:var(--card);color:var(--text);border:1px solid var(--line);margin-top:10px}
 .btn.warn{background:var(--card);color:var(--danger);border:1px solid var(--line);margin-top:10px}
 
+/* ---- segmented control ---- */
+.seg{display:flex;gap:4px;background:var(--card);border:1px solid var(--line);
+  border-radius:11px;padding:3px;margin-bottom:10px}
+.seg button{flex:1;padding:9px 0;border-radius:8px;font-size:14px;font-weight:600;color:var(--muted)}
+.seg button.on{background:var(--accent);color:#fff}
+
 /* ---- history ---- */
 .hcard{background:var(--card);border-radius:13px;padding:14px;margin-bottom:10px;box-shadow:var(--shadow)}
 .hcard summary{display:flex;justify-content:space-between;align-items:center;
@@ -458,6 +464,136 @@ const byId = id => state.items.find(i => i.id === id);
 const storeOf = id => { const c = state.checked[id]; return c && c.store != null ? c.store : (byId(id)?.store ?? 0); };
 const checkedIds = () => Object.keys(state.checked).filter(byId);
 
+/* ---------- purchase analysis ----------
+   Everything here is derived from state.history, which already holds every
+   order locally — so this needs no server call and works offline.
+
+   The governing rule is to never claim more confidence than the data supports.
+   Two purchases give one interval, which is not a cadence; below three
+   purchases we rank on plain recency and say so. Items never bought are left
+   out of suggestions entirely: with only a few weeks of history "never bought"
+   means not yet observed, not overdue, and there are enough of them to bury
+   every real signal. */
+const DAY = 86400000;
+const median = xs => {
+  if (!xs.length) return null;
+  const s = xs.slice().sort((a,b)=>a-b), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+};
+
+// item id -> ascending purchase timestamps
+function purchaseIndex(){
+  const map = new Map();
+  for (const h of state.history)
+    for (const l of h.lines){
+      if (!l.id) continue;
+      if (!map.has(l.id)) map.set(l.id, []);
+      map.get(l.id).push(h.ts);
+    }
+  for (const ts of map.values()) ts.sort((a,b)=>a-b);
+  return map;
+}
+
+const gaps = ts => ts.slice(1).map((t,i) => (t - ts[i]) / DAY);
+
+function statsFor(timestamps, now){
+  const n = timestamps.length;
+  if (!n) return { n:0, lastTs:null, daysSince:null, cadence:null, intervals:[] };
+  const lastTs = timestamps[n-1];
+  const intervals = gaps(timestamps);
+  return {
+    n, lastTs, intervals,
+    daysSince: (now - lastTs) / DAY,
+    // One interval is a coin flip, not a rhythm — need at least two.
+    cadence: n >= 3 ? median(intervals) : null
+  };
+}
+
+// Typical gap across everything bought, used as the expectation for items that
+// don't yet have a rhythm of their own. Falls back to a fortnight when there
+// isn't a single repeat purchase anywhere.
+function globalCadence(index){
+  const all = [];
+  for (const ts of index.values()) all.push(...gaps(ts));
+  return median(all) ?? 14;
+}
+
+function analyze(now = Date.now()){
+  const index = purchaseIndex();
+  const prior = globalCadence(index);
+  const byItem = new Map();
+  for (const it of state.items) byItem.set(it.id, statsFor(index.get(it.id) || [], now));
+
+  // An interchangeable category behaves as one pseudo-item: any member counts
+  // as buying "some fruit", so its purchases are the orders any member appears in.
+  const groups = state.interchangeable
+    .filter(c => state.items.some(i => i.cat === c))
+    .map(c => {
+      const ids = new Set(state.items.filter(i => i.cat === c).map(i => i.id));
+      const ts = [];
+      for (const h of state.history)
+        if (h.lines.some(l => ids.has(l.id))) ts.push(h.ts);
+      ts.sort((a,b)=>a-b);
+      return { cat: c, stats: statsFor(ts, now) };
+    });
+
+  return { index, prior, byItem, groups, now };
+}
+
+// Is it due, and how confident are we? ratio drives ordering.
+function dueness(stats, prior){
+  if (!stats.n) return null;
+  if (stats.cadence){
+    const ratio = stats.daysSince / stats.cadence;
+    // Slightly early beats slightly late when the cost is buying milk a day sooner.
+    return ratio >= 0.85 ? { ratio, cadence: stats.cadence, firm: true } : null;
+  }
+  return stats.daysSince >= prior ? { ratio: stats.daysSince / prior, cadence: null, firm: false } : null;
+}
+
+const roundish = d => d < 10 ? Math.round(d * 10) / 10 : Math.round(d);
+
+function dueNote(stats, due){
+  const days = Math.round(stats.daysSince);
+  const d = `${days} day${days === 1 ? "" : "s"}`;
+  return due.firm ? `${d} — usually about ${roundish(due.cadence)}` : `${d} since last`;
+}
+
+/* Suggestions are gated on the staple flag: proposing an item asserts you
+   probably need it, which is exactly what that flag means. Trends below
+   reports on everything regardless. */
+function suggestions(now = Date.now()){
+  const a = analyze(now);
+  const grouped = new Set();
+  for (const g of a.groups)
+    for (const i of state.items) if (i.cat === g.cat) grouped.add(i.id);
+
+  const items = [];
+  for (const it of state.items){
+    if (!it.staple || grouped.has(it.id)) continue;
+    const stats = a.byItem.get(it.id);
+    const due = dueness(stats, a.prior);
+    if (due) items.push({ kind:"item", item: it, stats, due, note: dueNote(stats, due) });
+  }
+
+  const cats = [];
+  for (const g of a.groups){
+    const due = dueness(g.stats, a.prior);
+    if (!due) continue;
+    const days = Math.round(g.stats.daysSince);
+    cats.push({ kind:"group", cat: g.cat, stats: g.stats, due,
+                note: `${days} day${days === 1 ? "" : "s"} since any` });
+  }
+
+  // Cadence-backed suggestions first — they're the ones actually earned.
+  // Capped because this sits above the inventory on Shop: early on, when
+  // nothing has a cadence yet, the recency rule alone can nominate half of
+  // everything ever bought. Trends shows the full picture.
+  return cats.concat(items)
+    .sort((x,y) => (y.due.firm - x.due.firm) || (y.due.ratio - x.due.ratio))
+    .slice(0, 8);
+}
+
 let toastT;
 function toast(msg){
   const t = $("#toast"); t.textContent = msg; t.classList.add("on");
@@ -493,6 +629,7 @@ const ICONS = {
 const TABS = [["shop","Shop"],["order","Order"],["hist","History"],["manage","Manage"]];
 let tab = "shop";
 let editingOrder = null; // id of the past order currently open for editing
+let histView = "orders"; // "orders" | "trends"
 
 function renderTabs(){
   const n = checkedIds().length;
@@ -521,20 +658,40 @@ function renderShop(){
       i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
     .filter(([,arr]) => arr.length);
 
-  $("#v-shop").innerHTML = shown.length ? shown.map(([c,arr]) =>
+  // Suppressed while searching — a search is a specific intent, not a browse.
+  const sug = q ? [] : suggestions();
+  const sugHTML = sug.length
+    ? `<div class="cat">Probably due</div><div class="list">${sug.map(s =>
+        s.kind === "group" ? groupRowHTML(s) : rowHTML(s.item, s.note)).join("")}</div>`
+    : "";
+
+  $("#v-shop").innerHTML = shown.length ? sugHTML + shown.map(([c,arr]) =>
     `<div class="cat" id="cat-${slug(c)}">${esc(c)}</div>
-     <div class="list">${arr.map(rowHTML).join("")}</div>`).join("")
+     <div class="list">${arr.map(i => rowHTML(i)).join("")}</div>`).join("")
     : `<div class="empty">No items match “${esc(query)}”</div>`;
 }
 
-function rowHTML(i){
+function rowHTML(i, note){
   const on = !!state.checked[i.id], s = storeOf(i.id);
   return `<div class="row ${on?"done":""}">
     <button class="tap" data-check="${i.id}">
       <span class="box">${TICK}</span>
-      <span class="grow"><span class="name">${esc(i.name)}</span></span>
+      <span class="grow"><span class="name">${esc(i.name)}</span>${
+        note ? `<span class="meta">${esc(note)}</span>` : ""}</span>
     </button>
     <button class="store s${s}" data-store="${i.id}">${esc(STORES[s])}</button>
+  </div>`;
+}
+
+// A whole category is due rather than any one item in it, so this row opens the
+// category instead of checking something off.
+function groupRowHTML(s){
+  return `<div class="row">
+    <button class="tap" data-gocat="${esc(s.cat)}">
+      <span class="grow"><span class="name">${esc(s.cat)}</span>
+        <span class="meta">${esc(s.note)}</span></span>
+    </button>
+    <span class="store s2">Pick one</span>
   </div>`;
 }
 
@@ -581,8 +738,8 @@ function renderOrder(){
 
 /* ---------- history view ---------- */
 function renderHist(){
-  $("#tools").innerHTML = "";
   if (!state.history.length){
+    $("#tools").innerHTML = "";
     $("#v-hist").innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
       <div>No finalized orders yet.</div>
@@ -590,6 +747,11 @@ function renderHist(){
       "what do you usually buy" features will learn from.</div></div>`;
     return;
   }
+  $("#tools").innerHTML = `<div class="seg">
+    <button data-hv="orders" class="${histView==="orders"?"on":""}">Orders</button>
+    <button data-hv="trends" class="${histView==="trends"?"on":""}">Trends</button>
+  </div>`;
+  if (histView === "trends") return renderTrends();
   // Sorted rather than just reversed: editing a date reorders history, so
   // insertion order can no longer be trusted to match chronology.
   $("#v-hist").innerHTML = state.history.slice().sort((a,b)=>b.ts-a.ts).map(h => {
@@ -601,6 +763,65 @@ function renderHist(){
       ${editingOrder===h.id ? editBody(h) : readBody(h)}
     </details>`;
   }).join("");
+}
+
+const relDay = d =>
+  d < 1 ? "today" : d < 2 ? "yesterday" : `${Math.round(d)} days ago`;
+
+/* Trends reports on everything that's been bought, staple or not — it's an
+   observation tool, unlike suggestions, which assert you need something. */
+function renderTrends(){
+  const a = analyze();
+  const rows = state.items
+    .map(it => ({ it, s: a.byItem.get(it.id) }))
+    .filter(r => r.s.n > 0)
+    .sort((x,y) => (y.s.n - x.s.n) || (x.s.daysSince - y.s.daysSince));
+
+  const withCadence = rows.filter(r => r.s.cadence).length;
+  const span = state.history.reduce((m,h) => Math.min(m, h.ts), Infinity);
+  const spanDays = Math.round((a.now - span) / DAY);
+  const neverBought = state.items.length - rows.length;
+
+  const byCat = {};
+  for (const r of rows) byCat[r.it.cat] = (byCat[r.it.cat] || 0) + r.s.n;
+  const byStore = {};
+  for (const h of state.history)
+    for (const l of h.lines) byStore[l.store] = (byStore[l.store] || 0) + 1;
+
+  $("#v-hist").innerHTML = `
+  <div class="card">
+    <h2>What this is based on</h2>
+    <p>${state.history.length} order${state.history.length===1?"":"s"} over ${spanDays} days.
+       ${withCadence
+         ? `${withCadence} item${withCadence===1?" has":"s have"} been bought enough times to estimate how often.`
+         : `Nothing has been bought three times yet, so nothing has a reliable rhythm —
+            suggestions currently go on how long it's been instead. This sharpens on its own as you shop.`}</p>
+  </div>
+
+  <div class="card">
+    <h2>Items bought · ${rows.length}</h2>
+    <p>${neverBought} item${neverBought===1?"":"s"} in your list ${neverBought===1?"has":"have"} never been on an order.</p>
+    <div class="list">${rows.map(r => `<div class="row">
+      <span class="grow"><span class="name">${esc(r.it.name)}</span>
+        <span class="meta">${esc(r.it.cat)} · last ${esc(relDay(r.s.daysSince))}${
+          r.s.cadence ? ` · about every ${roundish(r.s.cadence)} days` : ""}</span></span>
+      <span class="store s${r.it.store}">×${r.s.n}</span>
+    </div>`).join("")}</div>
+  </div>
+
+  <div class="card">
+    <h2>By category</h2>
+    <div class="list">${Object.entries(byCat).sort((x,y)=>y[1]-x[1]).map(([c,n]) =>
+      `<div class="row"><span class="grow"><span class="name">${esc(c)}</span></span>
+        <span class="c">${n}</span></div>`).join("")}</div>
+  </div>
+
+  <div class="card">
+    <h2>By store</h2>
+    <div class="list">${Object.entries(byStore).sort((x,y)=>y[1]-x[1]).map(([s,n]) =>
+      `<div class="row"><span class="grow"><span class="name">${esc(s)}</span></span>
+        <span class="c">${n}</span></div>`).join("")}</div>
+  </div>`;
 }
 
 function readBody(h){
@@ -767,6 +988,18 @@ document.addEventListener("click", e => {
     return;
   }
 
+  const hv = t.closest("[data-hv]");
+  if (hv){ histView = hv.dataset.hv; renderHist(); window.scrollTo(0,0); return; }
+
+  const goc = t.closest("[data-gocat]");
+  if (goc){
+    activeCat = goc.dataset.gocat;
+    renderShop();
+    const el = $("#cat-"+slug(activeCat));
+    if (el) window.scrollTo({ top: el.offsetTop - 8, behavior:"smooth" });
+    return;
+  }
+
   const chip = t.closest("[data-c]");
   if (chip){
     const c = chip.dataset.c;
@@ -916,7 +1149,7 @@ document.addEventListener("input", e => {
     const shown = cats.map(c => [c, state.items.filter(i => i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
       .filter(([,a]) => a.length);
     shop.innerHTML = shown.length ? shown.map(([c,arr]) =>
-      `<div class="cat" id="cat-${slug(c)}">${esc(c)}</div><div class="list">${arr.map(rowHTML).join("")}</div>`).join("")
+      `<div class="cat" id="cat-${slug(c)}">${esc(c)}</div><div class="list">${arr.map(i => rowHTML(i)).join("")}</div>`).join("")
       : `<div class="empty">No items match “${esc(query)}”</div>`;
   }
 });
