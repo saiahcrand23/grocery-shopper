@@ -20,7 +20,10 @@ CREATE TABLE IF NOT EXISTS items (
   default_store INTEGER NOT NULL,
   updated_at TEXT NOT NULL,
   deleted_at TEXT,
-  staple INTEGER NOT NULL DEFAULT 0
+  staple INTEGER NOT NULL DEFAULT 0,
+  -- A one-off exists only while it's on the current list; it never shows up as
+  -- browsable inventory and is removed once the order is finalized.
+  oneoff INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS checked (
@@ -84,6 +87,7 @@ def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript(SCHEMA)
         _ensure_column(conn, "items", "staple", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "items", "oneoff", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "categories", "interchangeable", "INTEGER NOT NULL DEFAULT 0")
 
 

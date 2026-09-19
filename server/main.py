@@ -59,6 +59,7 @@ class ItemIn(BaseModel):
     # None means "leave as-is". A False default would clear the flag on every
     # write that doesn't mention it.
     staple: Optional[bool] = None
+    oneoff: Optional[bool] = None
 
 
 class CategoryIn(BaseModel):
@@ -111,7 +112,7 @@ def health():
 
 def _items(conn):
     rows = conn.execute(
-        "SELECT id, name, category, default_store, staple, updated_at FROM items WHERE deleted_at IS NULL"
+        "SELECT id, name, category, default_store, staple, oneoff, updated_at FROM items WHERE deleted_at IS NULL"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -179,23 +180,21 @@ def list_items():
 def upsert_item(item_id: str, body: ItemIn):
     with get_conn() as conn:
         ts = now()
-        if body.staple is None:
-            prev = conn.execute("SELECT staple FROM items WHERE id=?", (item_id,)).fetchone()
-            staple = prev["staple"] if prev else 0
-        else:
-            staple = int(body.staple)
+        prev = conn.execute("SELECT staple, oneoff FROM items WHERE id=?", (item_id,)).fetchone()
+        staple = int(body.staple) if body.staple is not None else (prev["staple"] if prev else 0)
+        oneoff = int(body.oneoff) if body.oneoff is not None else (prev["oneoff"] if prev else 0)
         conn.execute(
             """
-            INSERT INTO items (id, name, category, default_store, staple, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO items (id, name, category, default_store, staple, oneoff, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name, category=excluded.category,
               default_store=excluded.default_store, staple=excluded.staple,
-              updated_at=excluded.updated_at, deleted_at=NULL
+              oneoff=excluded.oneoff, updated_at=excluded.updated_at, deleted_at=NULL
             """,
-            (item_id, body.name, body.category, body.default_store, staple, ts),
+            (item_id, body.name, body.category, body.default_store, staple, oneoff, ts),
         )
-        row = conn.execute("SELECT id, name, category, default_store, staple, updated_at FROM items WHERE id=?", (item_id,)).fetchone()
+        row = conn.execute("SELECT id, name, category, default_store, staple, oneoff, updated_at FROM items WHERE id=?", (item_id,)).fetchone()
         return dict(row)
 
 

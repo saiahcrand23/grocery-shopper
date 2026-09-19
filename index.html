@@ -292,7 +292,7 @@ function seed(){
   const items = [];
   for (const [cat, names] of Object.entries(SEED))
     for (const n of names)
-      items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0, staple:false });
+      items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0, staple:false, oneoff:false });
   return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[], interchangeable:[], recipes:[] };
 }
 
@@ -311,7 +311,7 @@ function load(){
     // Items saved before staples existed lack the key. Append it (never insert
     // it mid-object) so the shape matches what the server round-trip produces —
     // otherwise every poll reads as a change and repaints over what's being typed.
-    s.items = s.items.map(i => "staple" in i ? i : { ...i, staple:false });
+    s.items = s.items.map(i => "oneoff" in i ? i : { ...i, staple: i.staple || false, oneoff:false });
     s.interchangeable = s.interchangeable || [];
     s.recipes = s.recipes || [];
     return s;
@@ -376,8 +376,8 @@ async function apiCall(method, path, body){
 }
 
 /* boundary mappers — client uses {id,name,cat,store}, server uses {name,category,default_store} */
-const toServerItem = it => ({ name: it.name, category: it.cat, default_store: it.store, staple: !!it.staple });
-const fromServerItem = r => ({ id: r.id, name: r.name, cat: r.category, store: r.default_store, staple: !!r.staple });
+const toServerItem = it => ({ name: it.name, category: it.cat, default_store: it.store, staple: !!it.staple, oneoff: !!it.oneoff });
+const fromServerItem = r => ({ id: r.id, name: r.name, cat: r.category, store: r.default_store, staple: !!r.staple, oneoff: !!r.oneoff });
 const toServerChecked = c => ({ qty: c.qty || 1, store_override: c.store != null ? c.store : null });
 const fromServerChecked = r => ({ qty: r.qty, store: r.store_override });
 const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store: l.store, qty: l.qty });
@@ -479,6 +479,9 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
 const byId = id => state.items.find(i => i.id === id);
 const storeOf = id => { const c = state.checked[id]; return c && c.store != null ? c.store : (byId(id)?.store ?? 0); };
 const checkedIds = () => Object.keys(state.checked).filter(byId);
+// One-offs live only on the current list, so they never appear as browsable
+// inventory on Shop or in Manage.
+const inventory = () => state.items.filter(i => !i.oneoff);
 
 /* ---------- purchase analysis ----------
    Everything here is derived from state.history, which already holds every
@@ -664,14 +667,15 @@ let query = "", activeCat = "";
 
 function renderShop(){
   const q = query.trim().toLowerCase();
-  const cats = state.cats.filter(c => state.items.some(i=>i.cat===c));
+  const stock = inventory();
+  const cats = state.cats.filter(c => stock.some(i=>i.cat===c));
 
   $("#tools").innerHTML =
     `<input class="search" id="q" type="search" placeholder="Search items" value="${esc(query)}">` +
     (q ? "" : `<div class="chips">${cats.map(c=>
       `<button class="chip ${activeCat===c?"on":""}" data-c="${esc(c)}">${esc(c)}</button>`).join("")}</div>`);
 
-  const shown = cats.map(c => [c, state.items.filter(i =>
+  const shown = cats.map(c => [c, stock.filter(i =>
       i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
     .filter(([,arr]) => arr.length);
 
@@ -712,6 +716,14 @@ function groupRowHTML(s){
   </div>`;
 }
 
+const oneoffCard = () => `<div class="card" style="margin-top:14px">
+    <h2>Add a one-off</h2>
+    <p>For something you need this week but don't want cluttering your item list. It leaves when the order is finalized.</p>
+    <input class="field" id="oo" placeholder="e.g. birthday candles">
+    <select class="field" id="oos">${STORES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join("")}</select>
+    <button class="mini" id="ooadd">Add to this order</button>
+  </div>`;
+
 /* ---------- order view ---------- */
 function renderOrder(){
   $("#tools").innerHTML = "";
@@ -720,7 +732,7 @@ function renderOrder(){
     $("#v-order").innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 7h12l1 13H5L6 7z"/><path d="M9 7a3 3 0 016 0"/></svg>
       <div>Nothing checked off yet.</div>
-      <div style="margin-top:6px">Tap items on the Shop tab to build this week's order.</div></div>`;
+      <div style="margin-top:6px">Tap items on the Shop tab to build this week's order.</div></div>` + oneoffCard();
     return;
   }
   let html = "";
@@ -733,23 +745,25 @@ function renderOrder(){
         const it = byId(id), c = state.checked[id];
         return `<div class="row">
           <span class="grow"><span class="name">${esc(it.name)}</span>
-            <span class="meta">${esc(it.cat)}${c.store!=null?" · store changed":""}</span></span>
+            <span class="meta">${it.oneoff ? "one-off" : esc(it.cat)}${c.store!=null?" · store changed":""}</span></span>
           <span class="qty">
             <button data-q="-1" data-id="${id}">−</button>
             <b>${c.qty||1}</b>
             <button data-q="1" data-id="${id}">+</button>
           </span>
           <button class="store s${si}" data-store="${id}">Move</button>
+          ${it.oneoff ? `<button class="del" data-droponeoff="${id}">Remove</button>` : ""}
         </div>`;
       }).join("")}</div>`;
   });
   const total = ids.reduce((a,id)=> a + (state.checked[id].qty||1), 0);
+  html += oneoffCard();
   html += `<button class="btn" id="finalize">Finalize order · ${total} item${total>1?"s":""}</button>
            <button class="btn ghost" id="print">Print list</button>
            <button class="btn warn" id="clear">Uncheck everything</button>
            <p style="font-size:12px;color:var(--muted);text-align:center;margin:14px 4px 0;line-height:1.5">
              Finalizing saves this order to History with today's date, then unchecks the boxes.
-             Neither button ever removes items from your inventory.</p>`;
+             Neither button ever removes items from your inventory — only one-offs are cleared out.</p>`;
   $("#v-order").innerHTML = html;
 }
 
@@ -1127,17 +1141,17 @@ function renderManage(){
   </div>
 
   <div class="card">
-    <h2>All items · ${state.items.length}</h2>
+    <h2>All items · ${inventory().length}</h2>
     <p>Tap a name to rename it, the store pill to change its default store.
        <b>Staple</b> marks something you always want in stock. On a category,
        <b>Any item counts</b> means the items stand in for each other — you want
        some fruit each week, not one specific fruit.</p>
-    ${cats.filter(c=>state.items.some(i=>i.cat===c)).map(c=>
+    ${cats.filter(c=>inventory().some(i=>i.cat===c)).map(c=>
       `<div class="cat">
          <button class="catname" data-catrename="${esc(c)}">${esc(c)}</button>
          <button class="flag ${state.interchangeable.includes(c)?"on":""}" data-catany="${esc(c)}">Any item counts</button>
        </div>
-       <div class="list">${state.items.filter(i=>i.cat===c).map(i=>{
+       <div class="list">${inventory().filter(i=>i.cat===c).map(i=>{
          return `<div class="erow">
            <input class="editname" value="${esc(i.name)}" data-rename="${i.id}">
            <div class="ectl">
@@ -1312,7 +1326,7 @@ document.addEventListener("click", e => {
     const cats = state.cats;
     sheet("Category for " + name, cats, -1, ci => {
       sheet("Default store for " + name, STORES, 0, si => {
-        const it = { id: slug(cats[ci])+"_"+slug(name)+"_"+uid(), name, cat: cats[ci], store: si, staple: false };
+        const it = { id: slug(cats[ci])+"_"+slug(name)+"_"+uid(), name, cat: cats[ci], store: si, staple:false, oneoff:false };
         state.items.push(it);
         enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
         draft.ingredients[idx].itemId = it.id;
@@ -1473,9 +1487,18 @@ document.addEventListener("click", e => {
     return;
   }
 
+  if (t.id === "ooadd"){ addOneOff(); return; }
+
+  const doo = t.closest("[data-droponeoff]");
+  if (doo){ dropOneOff(doo.dataset.droponeoff); save(); render(); return; }
+
   if (t.id === "finalize") finalize();
   if (t.id === "print") printOrder();
-  if (t.id === "clear" && confirm("Uncheck all items?\n\nThis only clears this week's checkmarks — your item list stays exactly as it is, and nothing is saved to History.")){
+  if (t.id === "clear" && confirm("Uncheck all items?\n\nThis only clears this week's checkmarks — your item list stays exactly as it is, and nothing is saved to History. One-off items are discarded.")){
+    state.items.filter(i => i.oneoff).forEach(i => {
+      state.items = state.items.filter(x => x.id !== i.id);
+      enqueue("DELETE", "/api/items/" + encodeURIComponent(i.id));
+    });
     state.checked = {}; enqueue("DELETE", "/api/checked"); save(); render();
   }
   if (t.id === "add") addItem();
@@ -1503,8 +1526,9 @@ document.addEventListener("input", e => {
   if (e.target.id === "q"){ query = e.target.value; activeCat = "";
     const shop = $("#v-shop"); const q = query.trim().toLowerCase();
     // re-render list only, so the input keeps focus
-    const cats = state.cats.filter(c => state.items.some(i=>i.cat===c));
-    const shown = cats.map(c => [c, state.items.filter(i => i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
+    const stock = inventory();
+    const cats = state.cats.filter(c => stock.some(i=>i.cat===c));
+    const shown = cats.map(c => [c, stock.filter(i => i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
       .filter(([,a]) => a.length);
     shop.innerHTML = shown.length ? shown.map(([c,arr]) =>
       `<div class="cat" id="cat-${slug(c)}">${esc(c)}</div><div class="list">${arr.map(i => rowHTML(i)).join("")}</div>`).join("")
@@ -1563,10 +1587,31 @@ function addItem(){
   if (cat === "__new") return toast("Pick a category first");
   if (state.items.some(i => i.cat===cat && i.name.toLowerCase()===name.toLowerCase()))
     return toast(name + " is already in " + cat);
-  const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store };
+  const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store, staple:false, oneoff:false };
   state.items.push(it);
   enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
   save(); render(); toast(`Added ${name} to ${cat}`);
+}
+
+/* One-offs are deliberately not part of the inventory, so they carry a category
+   only for display and are removed the moment they leave the list. */
+function addOneOff(){
+  const name = ($("#oo").value || "").trim();
+  if (!name) return toast("Give the one-off a name first");
+  const store = +$("#oos").value;
+  const it = { id: "oneoff_"+slug(name)+"_"+uid(), name, cat: "One-off", store, staple:false, oneoff:true };
+  state.items.push(it);
+  state.checked[it.id] = { qty:1, store:null };
+  enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+  enqueue("PUT", "/api/checked/" + encodeURIComponent(it.id), toServerChecked(state.checked[it.id]));
+  save(); render();
+  toast(`Added ${name} to this order`);
+}
+
+function dropOneOff(id){
+  delete state.checked[id];
+  state.items = state.items.filter(i => i.id !== id);
+  enqueue("DELETE", "/api/items/" + encodeURIComponent(id));
 }
 
 function finalize(){
@@ -1577,10 +1622,14 @@ function finalize(){
     // id links the line back to the item so renames don't split its history;
     // name/cat/store stay denormalized so a past order still reads correctly
     // after the item is renamed or deleted.
-    return { id: it.id, name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
+    // A one-off leaves no lasting item, so its line carries no item id —
+    // nothing should later resolve it or fold it into purchase trends.
+    return { id: it.oneoff ? null : it.id, name: it.name, cat: it.cat,
+             store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
   });
   const ts = Date.now(), id = orderId();
   state.history.push({ id, ts, lines });
+  ids.forEach(i => { const it = byId(i); if (it && it.oneoff) dropOneOff(i); });
   state.checked = {};
   enqueue("POST", "/api/orders", { id, finalized_at: new Date(ts).toISOString(), lines: lines.map(toServerLine) });
   save(); tab = "hist"; render(); window.scrollTo(0,0);
