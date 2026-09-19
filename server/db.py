@@ -44,6 +44,29 @@ CREATE TABLE IF NOT EXISTS order_lines (
   store TEXT NOT NULL,
   qty INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recipes (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  instructions TEXT NOT NULL DEFAULT '',
+  minutes INTEGER,
+  cost INTEGER,
+  healthy INTEGER NOT NULL DEFAULT 0,
+  health_notes TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS recipe_ingredients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id TEXT NOT NULL REFERENCES recipes(id),
+  position INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  -- Nullable and deliberately not a foreign key: an ingredient can be written
+  -- before its grocery item exists, and deleting an item must not take the
+  -- recipe with it.
+  item_id TEXT
+);
 """
 
 

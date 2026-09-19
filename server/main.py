@@ -1,8 +1,10 @@
+import base64
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -68,6 +70,21 @@ class RenameIn(BaseModel):
     new_name: str
 
 
+class IngredientIn(BaseModel):
+    text: str
+    item_id: Optional[str] = None
+
+
+class RecipeIn(BaseModel):
+    title: str
+    instructions: str = ""
+    minutes: Optional[int] = None
+    cost: Optional[int] = None
+    healthy: bool = False
+    health_notes: str = ""
+    ingredients: list[IngredientIn] = []
+
+
 class CheckedIn(BaseModel):
     qty: int = 1
     store_override: Optional[int] = None
@@ -123,6 +140,23 @@ def _history(conn):
     return result
 
 
+def _recipes(conn):
+    rows = conn.execute(
+        """SELECT id, title, instructions, minutes, cost, healthy, health_notes
+           FROM recipes WHERE deleted_at IS NULL ORDER BY title"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        ing = conn.execute(
+            "SELECT text, item_id FROM recipe_ingredients WHERE recipe_id=? ORDER BY position",
+            (r["id"],),
+        ).fetchall()
+        d = dict(r)
+        d["ingredients"] = [dict(i) for i in ing]
+        out.append(d)
+    return out
+
+
 @app.get("/api/state")
 def get_state():
     with get_conn() as conn:
@@ -131,6 +165,7 @@ def get_state():
             "categories": _categories(conn),
             "checked": _checked(conn),
             "history": _history(conn),
+            "recipes": _recipes(conn),
         }
 
 
@@ -336,3 +371,166 @@ def delete_order(order_id: str):
 def list_orders():
     with get_conn() as conn:
         return _history(conn)
+
+
+def _write_ingredients(conn, recipe_id: str, ingredients):
+    for pos, ing in enumerate(ingredients):
+        conn.execute(
+            "INSERT INTO recipe_ingredients (recipe_id, position, text, item_id) VALUES (?, ?, ?, ?)",
+            (recipe_id, pos, ing.text, ing.item_id),
+        )
+
+
+@app.get("/api/recipes")
+def list_recipes():
+    with get_conn() as conn:
+        return _recipes(conn)
+
+
+@app.put("/api/recipes/{recipe_id}")
+def upsert_recipe(recipe_id: str, body: RecipeIn):
+    with get_conn() as conn:
+        ts = now()
+        conn.execute(
+            """
+            INSERT INTO recipes (id, title, instructions, minutes, cost, healthy, health_notes, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(id) DO UPDATE SET
+              title=excluded.title, instructions=excluded.instructions, minutes=excluded.minutes,
+              cost=excluded.cost, healthy=excluded.healthy, health_notes=excluded.health_notes,
+              updated_at=excluded.updated_at, deleted_at=NULL
+            """,
+            (recipe_id, body.title, body.instructions, body.minutes, body.cost,
+             int(body.healthy), body.health_notes, ts),
+        )
+        # Ingredients are replaced wholesale — the client always sends the full list.
+        conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+        _write_ingredients(conn, recipe_id, body.ingredients)
+        return {"ok": True, "id": recipe_id}
+
+
+@app.delete("/api/recipes/{recipe_id}")
+def delete_recipe(recipe_id: str):
+    with get_conn() as conn:
+        # Ingredients first: foreign_keys is ON.
+        conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+        conn.execute("DELETE FROM recipes WHERE id=?", (recipe_id,))
+        return {"ok": True}
+
+
+# ---------- recipe extraction ----------
+# The only place this project calls a model. It runs at write time only: the
+# result is stored, so searching and filtering stay instant, free and offline.
+
+class ExtractedIngredient(BaseModel):
+    text: str
+    item_id: Optional[str] = None
+
+
+class ExtractedRecipe(BaseModel):
+    title: str
+    instructions: str
+    minutes: Optional[int] = None
+    cost: Optional[int] = None
+    healthy: bool
+    health_notes: str
+    ingredients: list[ExtractedIngredient] = []
+
+
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+# The API caps a request at 32MB and base64 inflates by about a third, so the
+# raw file has to stay comfortably under that.
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+EXTRACT_SYSTEM = """You extract structured recipes from text, photos and PDFs.
+
+Rules:
+- `instructions` is the full method as readable numbered steps.
+- `minutes` is total time start to finish; null if not stated or inferable.
+- `cost` is a rough grocery cost: 1 cheap, 2 moderate, 3 expensive. Never null.
+- `healthy` is a plain yes/no judgement for everyday home cooking.
+- `health_notes` is one short phrase, e.g. "high protein, low carb".
+- `ingredients[].text` is the ingredient exactly as written, quantity included.
+- `ingredients[].item_id` links to the household's grocery inventory. Use an id
+  from the supplied list when the ingredient is clearly that item; otherwise
+  null. Never invent an id. A rough match is fine (mozzarella -> a shredded
+  cheese item); a wrong one is worse than null, since null just asks the user."""
+
+
+def _extract_blocks(text: Optional[str], upload_bytes: Optional[bytes], media_type: Optional[str]):
+    if upload_bytes is None:
+        return [{"type": "text", "text": f"Extract the recipe from this text:\n\n{text}"}]
+    data = base64.standard_b64encode(upload_bytes).decode("utf-8")
+    if media_type == "application/pdf":
+        block = {"type": "document",
+                 "source": {"type": "base64", "media_type": "application/pdf", "data": data}}
+    else:
+        block = {"type": "image",
+                 "source": {"type": "base64", "media_type": media_type, "data": data}}
+    # Document/image first, instruction after — the documented ordering.
+    return [block, {"type": "text", "text": "Extract the recipe from this file."}]
+
+
+@app.post("/api/recipes/extract")
+async def extract_recipe(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None)):
+    # Input is validated before the key check so a bad file reports what's
+    # actually wrong with it rather than a generic configuration message.
+    upload_bytes = media_type = None
+    if file is not None:
+        media_type = (file.content_type or "").lower()
+        if media_type not in IMAGE_TYPES and media_type != "application/pdf":
+            raise HTTPException(status_code=415,
+                                detail=f"Can't read {media_type or 'that file type'}. Upload a PDF or an image.")
+        upload_bytes = await file.read()
+        if len(upload_bytes) > MAX_UPLOAD_BYTES:
+            mb = len(upload_bytes) / 1024 / 1024
+            raise HTTPException(status_code=413,
+                                detail=f"That file is {mb:.0f}MB. The limit is 20MB — try a smaller export or a photo of the page.")
+        if media_type == "image/jpg":
+            media_type = "image/jpeg"
+    elif not (text or "").strip():
+        raise HTTPException(status_code=400, detail="Provide recipe text or a file.")
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503,
+                            detail="Recipe extraction isn't configured on the server. Enter the recipe manually.")
+
+    with get_conn() as conn:
+        inventory = [{"id": r["id"], "name": r["name"], "category": r["category"]} for r in conn.execute(
+            "SELECT id, name, category FROM items WHERE deleted_at IS NULL ORDER BY category, name")]
+
+    import anthropic
+    client = anthropic.Anthropic()
+    try:
+        response = client.messages.parse(
+            model="claude-opus-5",
+            max_tokens=16000,
+            output_config={"effort": "low"},  # extraction is mechanical; raise if results disappoint
+            system=EXTRACT_SYSTEM,
+            messages=[
+                {"role": "user", "content": [{"type": "text",
+                 "text": "Grocery inventory to link ingredients against:\n" +
+                         "\n".join(f"{i['id']} = {i['name']} ({i['category']})" for i in inventory)}]},
+                {"role": "user", "content": _extract_blocks(text, upload_bytes, media_type)},
+            ],
+            output_format=ExtractedRecipe,
+        )
+    except anthropic.BadRequestError as e:
+        raise HTTPException(status_code=400, detail=f"Claude rejected that input: {e.message}")
+    except anthropic.AuthenticationError:
+        raise HTTPException(status_code=503, detail="The server's Anthropic API key is invalid.")
+    except anthropic.RateLimitError:
+        raise HTTPException(status_code=429, detail="Rate limited — try again in a moment.")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Claude returned an error ({e.status_code}).")
+    except anthropic.APIConnectionError:
+        raise HTTPException(status_code=502, detail="Couldn't reach Claude. Check the server's connection.")
+
+    recipe = response.parsed_output
+    # Never trust a returned id: a hallucinated one would silently attach an
+    # ingredient to the wrong grocery item.
+    valid = {i["id"] for i in inventory}
+    for ing in recipe.ingredients:
+        if ing.item_id not in valid:
+            ing.item_id = None
+    return recipe
