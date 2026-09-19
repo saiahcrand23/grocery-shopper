@@ -159,6 +159,7 @@ main{padding:0 16px calc(96px + env(safe-area-inset-bottom))}
    lay out like every other field; tapping still opens the system picker. */
 input[type="date"].field{-webkit-appearance:none;appearance:none;
   text-align:left;font-family:inherit;min-width:0}
+textarea.field{font:inherit;resize:vertical;display:block}
 
 /* Four controls on one line squeezes an item's name down to a few characters
    on a phone, so in the order editor the name gets a line of its own. */
@@ -247,6 +248,7 @@ nav svg{width:23px;height:23px}
   <section class="view on" id="v-shop"></section>
   <section class="view" id="v-order"></section>
   <section class="view" id="v-hist"></section>
+  <section class="view" id="v-recipes"></section>
   <section class="view" id="v-manage"></section>
 </main>
 
@@ -291,7 +293,7 @@ function seed(){
   for (const [cat, names] of Object.entries(SEED))
     for (const n of names)
       items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0, staple:false });
-  return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[], interchangeable:[] };
+  return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[], interchangeable:[], recipes:[] };
 }
 
 let state = load();
@@ -311,6 +313,7 @@ function load(){
     // otherwise every poll reads as a change and repaints over what's being typed.
     s.items = s.items.map(i => "staple" in i ? i : { ...i, staple:false });
     s.interchangeable = s.interchangeable || [];
+    s.recipes = s.recipes || [];
     return s;
   } catch { return seed(); }
 }
@@ -379,6 +382,14 @@ const toServerChecked = c => ({ qty: c.qty || 1, store_override: c.store != null
 const fromServerChecked = r => ({ qty: r.qty, store: r.store_override });
 const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store: l.store, qty: l.qty });
 const fromServerLine = l => ({ id: l.item_id, name: l.name, cat: l.category, store: l.store, qty: l.qty });
+const toServerRecipe = r => ({ title: r.title, instructions: r.instructions, minutes: r.minutes,
+  cost: r.cost, healthy: !!r.healthy, health_notes: r.healthNotes,
+  ingredients: r.ingredients.map(g => ({ text: g.text, item_id: g.itemId })) });
+// Key order here is the canonical one — every other place a recipe is built
+// must match it, or the poll's snapshot comparison sees a change every tick.
+const fromServerRecipe = r => ({ id: r.id, title: r.title, instructions: r.instructions,
+  minutes: r.minutes, cost: r.cost, healthy: !!r.healthy, healthNotes: r.health_notes,
+  ingredients: r.ingredients.map(g => ({ text: g.text, itemId: g.item_id })) });
 
 const orderId = () => (crypto.randomUUID ? crypto.randomUUID() : uid()+uid()+uid());
 
@@ -389,6 +400,8 @@ async function pushFullSnapshot(){
     await apiCall("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
   for (const [id, c] of Object.entries(state.checked))
     await apiCall("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(c));
+  for (const r of state.recipes)
+    await apiCall("PUT", "/api/recipes/" + encodeURIComponent(r.id), toServerRecipe(r));
   // deterministic ids so a retry after a partial failure can't create duplicate orders
   for (const h of state.history)
     await apiCall("POST", "/api/orders", { id: h.id || "seed-"+h.ts, finalized_at: new Date(h.ts).toISOString(), lines: h.lines.map(toServerLine) });
@@ -406,10 +419,12 @@ function adoptServerSnapshot(remote){
     checked: Object.fromEntries(Object.entries(remote.checked).map(([id,c]) => [id, fromServerChecked(c)])),
     history: remote.history.slice().reverse().map(h => ({ id: h.id, ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) })),
     // Sorted so this serializes identically however it was assembled.
-    interchangeable: remote.categories.filter(c => c.interchangeable).map(c => c.name).sort()
+    interchangeable: remote.categories.filter(c => c.interchangeable).map(c => c.name).sort(),
+    recipes: (remote.recipes || []).map(fromServerRecipe)
   };
   const current = { cats: state.cats, items: state.items, checked: state.checked,
-                    history: state.history, interchangeable: state.interchangeable };
+                    history: state.history, interchangeable: state.interchangeable,
+                    recipes: state.recipes };
   if (JSON.stringify(next) === JSON.stringify(current)) return false;
   Object.assign(state, next);
   save();
@@ -459,6 +474,7 @@ function startSync(){
 
 /* ---------- helpers ---------- */
 const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const byId = id => state.items.find(i => i.id === id);
 const storeOf = id => { const c = state.checked[id]; return c && c.store != null ? c.store : (byId(id)?.store ?? 0); };
@@ -624,9 +640,10 @@ const ICONS = {
   shop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 7h12l1 13H5L6 7z"/><path d="M9 7a3 3 0 016 0"/></svg>',
   order:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></svg>',
   hist:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
-  manage:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2 2 2 0 11-4 0 1.7 1.7 0 00-2.9-1.2l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003 15a2 2 0 010-4 1.7 1.7 0 001.2-2.9l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 4a2 2 0 014 0a1.7 1.7 0 002.9 1.2l.1-.1a2 2 0 112.8 2.8l-.1.1A1.7 1.7 0 0021 11a2 2 0 010 4z"/></svg>'
+  manage:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2 2 2 0 11-4 0 1.7 1.7 0 00-2.9-1.2l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003 15a2 2 0 010-4 1.7 1.7 0 001.2-2.9l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 4a2 2 0 014 0a1.7 1.7 0 002.9 1.2l.1-.1a2 2 0 112.8 2.8l-.1.1A1.7 1.7 0 0021 11a2 2 0 010 4z"/></svg>',
+  recipes:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h11a2.5 2.5 0 012.5 2.5v12.5H7.5A2.5 2.5 0 015 17V4.5z"/><path d="M8.5 9h7M8.5 12.5h7"/></svg>'
 };
-const TABS = [["shop","Shop"],["order","Order"],["hist","History"],["manage","Manage"]];
+const TABS = [["shop","Shop"],["order","Order"],["recipes","Recipes"],["hist","History"],["manage","Manage"]];
 let tab = "shop";
 let editingOrder = null; // id of the past order currently open for editing
 let histView = "orders"; // "orders" | "trends"
@@ -871,6 +888,219 @@ function saveHistOrder(h){
   renderHist();
 }
 
+/* ---------- recipes view ----------
+   Browsing, searching and filtering all run on stored data, so this whole tab
+   works offline. Only Extract needs the network. */
+let rQuery = "", rHealthyOnly = false, rSort = "title", rIngFilter = [], openRecipe = null;
+
+const COST_LABEL = c => c ? "$".repeat(Math.min(3, Math.max(1, c))) : "—";
+const timeLabel = m => m == null ? "—" : m >= 60 ? `${Math.floor(m/60)}h${m%60 ? " "+(m%60)+"m" : ""}` : `${m}m`;
+const recipeById = id => state.recipes.find(r => r.id === id);
+
+function visibleRecipes(){
+  const q = rQuery.trim().toLowerCase();
+  let list = state.recipes.filter(r => {
+    if (q && !r.title.toLowerCase().includes(q)) return false;
+    if (rHealthyOnly && !r.healthy) return false;
+    // Multi-ingredient search is AND: every chosen item must appear.
+    return rIngFilter.every(id => r.ingredients.some(g => g.itemId === id));
+  });
+  const by = {
+    title: (a,b) => a.title.localeCompare(b.title),
+    // Unknowns sort last rather than pretending to be zero.
+    time:  (a,b) => (a.minutes ?? 1e9) - (b.minutes ?? 1e9) || a.title.localeCompare(b.title),
+    cost:  (a,b) => (a.cost ?? 1e9) - (b.cost ?? 1e9) || a.title.localeCompare(b.title)
+  };
+  return list.sort(by[rSort] || by.title);
+}
+
+function renderRecipes(){
+  $("#tools").innerHTML =
+    `<input class="search" id="rq" type="search" placeholder="Search recipes" value="${esc(rQuery)}">
+     <div class="chips">
+       <button class="chip ${rSort==="title"?"on":""}" data-rsort="title">A–Z</button>
+       <button class="chip ${rSort==="time"?"on":""}" data-rsort="time">Quickest</button>
+       <button class="chip ${rSort==="cost"?"on":""}" data-rsort="cost">Cheapest</button>
+       <button class="chip ${rHealthyOnly?"on":""}" data-rhealthy="1">Healthy</button>
+       <button class="chip ${rIngFilter.length?"on":""}" data-ringfilter="1">Ingredients${rIngFilter.length?" · "+rIngFilter.length:""}</button>
+     </div>`;
+
+  if (openRecipe) return renderRecipeDetail(openRecipe);
+
+  const list = visibleRecipes();
+  const header = `<button class="btn" id="rnew">Add a recipe</button>`;
+  if (!state.recipes.length){
+    $("#v-recipes").innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 4.5h11a2.5 2.5 0 012.5 2.5v12.5H7.5A2.5 2.5 0 015 17V4.5z"/><path d="M8.5 9h7M8.5 12.5h7"/></svg>
+      <div>No recipes yet.</div>
+      <div style="margin-top:6px">Paste one in, or upload a photo or PDF and it'll be read for you.</div></div>` + header;
+    return;
+  }
+  $("#v-recipes").innerHTML = (list.length ? `<div class="list">${list.map(r => `
+    <div class="row">
+      <button class="tap" data-ropen="${r.id}">
+        <span class="grow"><span class="name">${esc(r.title)}</span>
+          <span class="meta">${timeLabel(r.minutes)} · ${COST_LABEL(r.cost)}${r.healthy?" · healthy":""}${
+            r.healthNotes ? " · " + esc(r.healthNotes) : ""}</span></span>
+      </button>
+      <span class="store s${r.healthy?2:0}">${r.ingredients.length}</span>
+    </div>`).join("")}</div>`
+    : `<div class="empty">No recipes match those filters.</div>`) + header;
+}
+
+function renderRecipeDetail(id){
+  const r = recipeById(id);
+  if (!r){ openRecipe = null; return renderRecipes(); }
+  const linked = r.ingredients.filter(g => g.itemId && byId(g.itemId)).length;
+  $("#v-recipes").innerHTML = `
+  <button class="btn ghost" id="rback" style="margin-top:0">‹ All recipes</button>
+  <div class="card">
+    <h2>${esc(r.title)}</h2>
+    <p>${timeLabel(r.minutes)} · ${COST_LABEL(r.cost)} · ${r.healthy?"healthy":"not marked healthy"}${
+      r.healthNotes ? " · " + esc(r.healthNotes) : ""}</p>
+    <button class="mini" data-raddlist="${r.id}">Add ${linked} ingredient${linked===1?"":"s"} to grocery list</button>
+    ${linked < r.ingredients.length
+      ? `<p style="margin-top:8px">${r.ingredients.length - linked} ingredient${r.ingredients.length-linked===1?" isn't":"s aren't"} linked to a grocery item, so ${r.ingredients.length-linked===1?"it won't":"they won't"} be added. Edit the recipe to link ${r.ingredients.length-linked===1?"it":"them"}.</p>`
+      : ""}
+  </div>
+  <div class="card">
+    <h2>Ingredients</h2>
+    <div class="list">${r.ingredients.map(g => {
+      const it = g.itemId ? byId(g.itemId) : null;
+      return `<div class="row"><span class="grow"><span class="name">${esc(g.text)}</span>
+        <span class="meta">${it ? esc(it.name) : "not linked to a grocery item"}</span></span></div>`;
+    }).join("") || `<div class="row"><span class="c">No ingredients recorded.</span></div>`}</div>
+  </div>
+  <div class="card">
+    <h2>Instructions</h2>
+    <p style="white-space:pre-wrap;color:var(--text)">${esc(r.instructions) || "None recorded."}</p>
+  </div>
+  <button class="btn ghost" data-redit="${r.id}">Edit recipe</button>
+  <button class="btn warn" data-rdel="${r.id}">Delete recipe</button>`;
+}
+
+/* Editing works on a draft copy so an abandoned edit changes nothing, and so
+   the sync poll can't repaint a half-finished recipe out from under you. */
+let draft = null;
+
+const blankDraft = () => ({ id: "r_"+uid()+uid(), title:"", instructions:"", minutes:null,
+  cost:2, healthy:false, healthNotes:"", ingredients:[] });
+
+function renderRecipeEdit(){
+  const d = draft;
+  $("#tools").innerHTML = "";
+  $("#v-recipes").innerHTML = `
+  <div class="card">
+    <h2>Start from a file or paste</h2>
+    <p>Upload a PDF, a screenshot, or a photo of a cookbook page and it'll be read into the fields below. Or paste the text. You can also just type everything yourself.</p>
+    <textarea class="field" id="rpaste" rows="4" placeholder="Paste recipe text here…"></textarea>
+    <button class="mini" id="rextract">Read this text</button>
+    <button class="btn ghost" id="rpickfile">Choose a file or take a photo…</button>
+    <input type="file" id="rfile" accept="application/pdf,image/*" hidden>
+    <div id="rstatus" class="meta" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Recipe</h2>
+    <label class="meta">Title</label>
+    <input class="field" id="rtitle" value="${esc(d.title)}" placeholder="Recipe name">
+    <label class="meta">Minutes</label>
+    <input class="field" id="rmin" type="number" inputmode="numeric" value="${d.minutes ?? ""}" placeholder="Total time">
+    <label class="meta">Cost</label>
+    <div class="chips">${[1,2,3].map(c =>
+      `<button class="chip ${d.cost===c?"on":""}" data-rcost="${c}">${"$".repeat(c)}</button>`).join("")}</div>
+    <label class="meta" style="margin-top:10px;display:block">Health</label>
+    <div class="chips">
+      <button class="chip ${d.healthy?"on":""}" data-rhealth="1">Healthy</button>
+      <button class="chip ${!d.healthy?"on":""}" data-rhealth="0">Not especially</button>
+    </div>
+    <label class="meta" style="margin-top:10px;display:block">Health notes</label>
+    <input class="field" id="rnotes" value="${esc(d.healthNotes)}" placeholder="e.g. high protein, low carb">
+    <label class="meta">Instructions</label>
+    <textarea class="field" id="rinstr" rows="6" placeholder="Method…">${esc(d.instructions)}</textarea>
+  </div>
+
+  <div class="card">
+    <h2>Ingredients · ${d.ingredients.length}</h2>
+    <p>Each ingredient needs a grocery item linked to it before it can be added to your list.</p>
+    <div class="list">${d.ingredients.map((g,i) => {
+      const it = g.itemId ? byId(g.itemId) : null;
+      return `<div class="erow">
+        <input class="editname" value="${esc(g.text)}" data-ringtext="${i}">
+        <div class="ectl">
+          <button class="flag ${it?"on":""}" data-ringlink="${i}">${it ? esc(it.name) : "Link item"}</button>
+          ${it ? "" : `<button class="flag" data-ringcreate="${i}">Create item</button>`}
+          <button class="del" data-ringdel="${i}">Remove</button>
+        </div>
+      </div>`;
+    }).join("") || `<div class="row"><span class="c">None yet.</span></div>`}</div>
+    <button class="mini" id="ringadd" style="margin-top:10px">Add an ingredient</button>
+  </div>
+
+  <button class="btn" id="rsave">Save recipe</button>
+  <button class="btn ghost" id="rcancel">Cancel</button>`;
+}
+
+// Pull the free-text fields into the draft before any re-render, or typing is lost.
+function syncDraftFields(){
+  if (!draft) return;
+  const t = $("#rtitle"), m = $("#rmin"), n = $("#rnotes"), i = $("#rinstr");
+  if (t) draft.title = t.value;
+  if (m) draft.minutes = m.value === "" ? null : Math.max(0, parseInt(m.value, 10) || 0);
+  if (n) draft.healthNotes = n.value;
+  if (i) draft.instructions = i.value;
+  $$("[data-ringtext]").forEach(el => { draft.ingredients[+el.dataset.ringtext].text = el.value; });
+}
+
+function pickItemFor(idx){
+  const pool = state.items.slice().sort((a,b) => a.cat.localeCompare(b.cat) || a.name.localeCompare(b.name));
+  sheet("Link to grocery item", pool.map(it => `${it.name} · ${it.cat}`), -1, pick => {
+    syncDraftFields();
+    draft.ingredients[idx].itemId = pool[pick].id;
+    renderRecipeEdit();
+  });
+}
+
+function saveDraft(){
+  syncDraftFields();
+  if (!draft.title.trim()) return toast("Give the recipe a title first");
+  draft.title = draft.title.trim();
+  draft.ingredients = draft.ingredients.filter(g => g.text.trim());
+  const existing = state.recipes.findIndex(r => r.id === draft.id);
+  if (existing >= 0) state.recipes[existing] = draft; else state.recipes.push(draft);
+  state.recipes.sort((a,b) => a.title.localeCompare(b.title));
+  enqueue("PUT", "/api/recipes/" + encodeURIComponent(draft.id), toServerRecipe(draft));
+  const id = draft.id;
+  draft = null; openRecipe = id;
+  save(); render(); window.scrollTo(0,0);
+  toast("Recipe saved");
+}
+
+async function extractRecipe(body, label){
+  const status = $("#rstatus");
+  if (status) status.textContent = `Reading ${label}… this takes a few seconds.`;
+  try {
+    const res = await fetch(API_BASE + "/api/recipes/extract", { method:"POST", body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Couldn't read that (${res.status}).`);
+    syncDraftFields();
+    // Anything already typed wins over the extraction — it was entered deliberately.
+    draft.title = draft.title || data.title || "";
+    draft.instructions = draft.instructions || data.instructions || "";
+    draft.minutes = draft.minutes ?? data.minutes ?? null;
+    draft.cost = data.cost || draft.cost;
+    draft.healthy = !!data.healthy;
+    draft.healthNotes = draft.healthNotes || data.health_notes || "";
+    draft.ingredients = draft.ingredients.concat(
+      (data.ingredients || []).map(g => ({ text: g.text, itemId: g.item_id || null })));
+    renderRecipeEdit();
+    const linked = draft.ingredients.filter(g => g.itemId).length;
+    toast(`Read ${draft.ingredients.length} ingredients, ${linked} linked`);
+  } catch (e) {
+    if (status) status.textContent = e.message + " You can still fill everything in by hand.";
+  }
+}
+
 /* ---------- manage view ---------- */
 function renderManage(){
   $("#tools").innerHTML = "";
@@ -923,8 +1153,10 @@ function renderManage(){
 function render(){
   document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));
   $("#v-"+tab).classList.add("on");
-  $("#title").textContent = {shop:"Shop",order:"This Week's Order",hist:"History",manage:"Manage"}[tab];
-  ({shop:renderShop, order:renderOrder, hist:renderHist, manage:renderManage})[tab]();
+  $("#title").textContent = {shop:"Shop",order:"This Week's Order",recipes:"Recipes",hist:"History",manage:"Manage"}[tab];
+  ({shop:renderShop, order:renderOrder,
+    recipes: () => draft ? renderRecipeEdit() : renderRecipes(),
+    hist:renderHist, manage:renderManage})[tab]();
   renderTabs();
 }
 
@@ -985,6 +1217,117 @@ document.addEventListener("click", e => {
     c.qty = Math.max(1, (c.qty||1) + (+q.dataset.q));
     enqueue("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(c));
     save(); renderOrder();
+    return;
+  }
+
+  /* ---- recipes ---- */
+  if (t.closest("#rnew")){ draft = blankDraft(); renderRecipeEdit(); window.scrollTo(0,0); return; }
+  if (t.closest("#rback")){ openRecipe = null; renderRecipes(); window.scrollTo(0,0); return; }
+  if (t.closest("#rcancel")){ draft = null; renderRecipes(); window.scrollTo(0,0); return; }
+  if (t.closest("#rsave")){ saveDraft(); return; }
+  if (t.closest("#rpickfile")){ $("#rfile").click(); return; }
+  if (t.closest("#rextract")){
+    const text = $("#rpaste").value.trim();
+    if (!text) return toast("Paste some recipe text first");
+    const fd = new FormData(); fd.append("text", text);
+    extractRecipe(fd, "that text");
+    return;
+  }
+  if (t.closest("#ringadd")){
+    syncDraftFields();
+    draft.ingredients.push({ text:"", itemId:null });
+    renderRecipeEdit();
+    return;
+  }
+
+  const ro = t.closest("[data-ropen]");
+  if (ro){ openRecipe = ro.dataset.ropen; renderRecipes(); window.scrollTo(0,0); return; }
+
+  const red = t.closest("[data-redit]");
+  if (red){
+    const r = recipeById(red.dataset.redit);
+    // Deep copy: editing must not mutate saved state until Save.
+    draft = JSON.parse(JSON.stringify(r));
+    openRecipe = null; renderRecipeEdit(); window.scrollTo(0,0);
+    return;
+  }
+
+  const rdel = t.closest("[data-rdel]");
+  if (rdel){
+    const r = recipeById(rdel.dataset.rdel);
+    if (!r || !confirm(`Delete “${r.title}”?\n\nThis can't be undone. Your grocery items aren't affected.`)) return;
+    state.recipes = state.recipes.filter(x => x.id !== r.id);
+    enqueue("DELETE", "/api/recipes/" + encodeURIComponent(r.id));
+    openRecipe = null; save(); render();
+    toast("Recipe deleted");
+    return;
+  }
+
+  const radd = t.closest("[data-raddlist]");
+  if (radd){
+    const r = recipeById(radd.dataset.raddlist);
+    if (!r) return;
+    let n = 0;
+    for (const g of r.ingredients){
+      if (!g.itemId || !byId(g.itemId) || state.checked[g.itemId]) continue;
+      state.checked[g.itemId] = { qty:1, store:null };
+      enqueue("PUT", "/api/checked/" + encodeURIComponent(g.itemId), toServerChecked(state.checked[g.itemId]));
+      n++;
+    }
+    save(); render();
+    toast(n ? `Added ${n} item${n===1?"":"s"} to the list` : "Those items are already on the list");
+    return;
+  }
+
+  const rs = t.closest("[data-rsort]");
+  if (rs){ rSort = rs.dataset.rsort; renderRecipes(); return; }
+  if (t.closest("[data-rhealthy]")){ rHealthyOnly = !rHealthyOnly; renderRecipes(); return; }
+
+  if (t.closest("[data-ringfilter]")){
+    if (rIngFilter.length){ rIngFilter = []; renderRecipes(); return; }
+    // Only items that actually appear in a recipe — the rest can't narrow anything.
+    const used = state.items.filter(it => state.recipes.some(r => r.ingredients.some(g => g.itemId === it.id)));
+    if (!used.length) return toast("No recipe ingredients are linked to items yet");
+    sheet("Filter by ingredient", used.map(it => it.name), -1, pick => {
+      rIngFilter = rIngFilter.concat(used[pick].id);
+      renderRecipes();
+    });
+    return;
+  }
+
+  const rc = t.closest("[data-rcost]");
+  if (rc){ syncDraftFields(); draft.cost = +rc.dataset.rcost; renderRecipeEdit(); return; }
+  const rh = t.closest("[data-rhealth]");
+  if (rh){ syncDraftFields(); draft.healthy = rh.dataset.rhealth === "1"; renderRecipeEdit(); return; }
+
+  const rlink = t.closest("[data-ringlink]");
+  if (rlink){ pickItemFor(+rlink.dataset.ringlink); return; }
+
+  const rcreate = t.closest("[data-ringcreate]");
+  if (rcreate){
+    syncDraftFields();
+    const idx = +rcreate.dataset.ringcreate, g = draft.ingredients[idx];
+    const name = (prompt("Name this grocery item", g.text.replace(/^[\d\s\/.,-]*(cups?|tbsp|tsp|oz|lbs?|g|kg|ml|l)?\s*/i, "").trim()) || "").trim();
+    if (!name) return;
+    const cats = state.cats;
+    sheet("Category for " + name, cats, -1, ci => {
+      sheet("Default store for " + name, STORES, 0, si => {
+        const it = { id: slug(cats[ci])+"_"+slug(name)+"_"+uid(), name, cat: cats[ci], store: si, staple: false };
+        state.items.push(it);
+        enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+        draft.ingredients[idx].itemId = it.id;
+        save(); renderRecipeEdit();
+        toast(`Added ${name} to ${cats[ci]}`);
+      });
+    });
+    return;
+  }
+
+  const rdelling = t.closest("[data-ringdel]");
+  if (rdelling){
+    syncDraftFields();
+    draft.ingredients.splice(+rdelling.dataset.ringdel, 1);
+    renderRecipeEdit();
     return;
   }
 
@@ -1142,6 +1485,21 @@ document.addEventListener("click", e => {
 });
 
 document.addEventListener("input", e => {
+  // Re-render the list only, so the search field keeps focus and the keyboard stays up.
+  if (e.target.id === "rq"){
+    rQuery = e.target.value;
+    const list = visibleRecipes();
+    $("#v-recipes").innerHTML = (list.length ? `<div class="list">${list.map(r => `
+      <div class="row">
+        <button class="tap" data-ropen="${r.id}">
+          <span class="grow"><span class="name">${esc(r.title)}</span>
+            <span class="meta">${timeLabel(r.minutes)} · ${COST_LABEL(r.cost)}${r.healthy?" · healthy":""}</span></span>
+        </button>
+        <span class="store s${r.healthy?2:0}">${r.ingredients.length}</span>
+      </div>`).join("")}</div>`
+      : `<div class="empty">No recipes match those filters.</div>`) + `<button class="btn" id="rnew">Add a recipe</button>`;
+    return;
+  }
   if (e.target.id === "q"){ query = e.target.value; activeCat = "";
     const shop = $("#v-shop"); const q = query.trim().toLowerCase();
     // re-render list only, so the input keeps focus
@@ -1168,6 +1526,14 @@ document.addEventListener("change", e => {
     const it = byId(e.target.dataset.rename);
     const v = e.target.value.trim();
     if (it && v){ it.name = v; enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it)); save(); } else if (it) e.target.value = it.name;
+  }
+  if (e.target.id === "rfile"){
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const fd = new FormData(); fd.append("file", f, f.name);
+    extractRecipe(fd, f.name);
+    return;
   }
   if (e.target.dataset && e.target.dataset.hdate !== undefined){
     const h = histOrder(e.target.dataset.hdate);
