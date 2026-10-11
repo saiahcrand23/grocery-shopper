@@ -173,6 +173,7 @@ select.field{-webkit-appearance:none;appearance:none;
   background-repeat:no-repeat;background-position:right 13px center}
 .mini{padding:11px;font-size:15px;border-radius:10px;background:var(--accent);color:#fff;
   font-weight:600;width:100%;text-align:center}
+button:disabled{opacity:.5}
 .del{flex:0 0 auto;color:var(--danger);font-size:13px;font-weight:600;padding:8px 4px}
 .editname{flex:1;min-width:0;background:none;border:0;padding:9px 0;font-size:16px}
 
@@ -1113,7 +1114,16 @@ function saveDraft(){
 
 async function extractRecipe(body, label){
   const status = $("#rstatus");
-  if (status) status.textContent = `Reading ${label}… this takes a few seconds.`;
+  const say = (msg, bad) => {
+    if (!status) return;
+    status.textContent = msg;
+    status.style.color = bad ? "var(--danger)" : "var(--muted)";
+    status.style.fontWeight = bad ? "600" : "400";
+  };
+  say(`Reading ${label}… this takes a few seconds.`);
+  const btn = $("#rextract"), pick = $("#rpickfile");
+  if (btn) btn.disabled = true;
+  if (pick) pick.disabled = true;
   try {
     const res = await fetch(API_BASE + "/api/recipes/extract", { method:"POST", body });
     const data = await res.json().catch(() => ({}));
@@ -1132,7 +1142,14 @@ async function extractRecipe(body, label){
     const linked = draft.ingredients.filter(g => g.itemId).length;
     toast(`Read ${draft.ingredients.length} ingredients, ${linked} linked`);
   } catch (e) {
-    if (status) status.textContent = e.message + " You can still fill everything in by hand.";
+    // A failure here has to be impossible to miss: the whole point of the
+    // upload was to avoid typing, so silently landing on an empty form reads
+    // as the feature being broken rather than unavailable.
+    say(e.message + " Nothing was filled in — you can still type it all below.", true);
+    toast("Couldn't read that — see the message above");
+  } finally {
+    if (btn) btn.disabled = false;
+    if (pick) pick.disabled = false;
   }
 }
 
