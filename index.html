@@ -930,6 +930,8 @@ function saveHistOrder(h){
    Browsing, searching and filtering all run on stored data, so this whole tab
    works offline. Only Extract needs the network. */
 let rQuery = "", rHealthyOnly = false, rSort = "title", rIngFilter = [], openRecipe = null;
+// Set of ingredient indices chosen for the list; null when not picking.
+let pickSel = null;
 
 const COST_LABEL = c => c ? "$".repeat(Math.min(3, Math.max(1, c))) : "—";
 const timeLabel = m => m == null ? "—" : m >= 60 ? `${Math.floor(m/60)}h${m%60 ? " "+(m%60)+"m" : ""}` : `${m}m`;
@@ -988,24 +990,47 @@ function renderRecipes(){
 function renderRecipeDetail(id){
   const r = recipeById(id);
   if (!r){ openRecipe = null; return renderRecipes(); }
-  const linked = r.ingredients.filter(g => g.itemId && byId(g.itemId)).length;
+  const shoppable = i => r.ingredients[i].itemId && byId(r.ingredients[i].itemId);
+  const linkedIdx = r.ingredients.map((g,i)=>i).filter(shoppable);
+  const linked = linkedIdx.length;
+  const picking = !!pickSel;
+  const chosen = picking ? linkedIdx.filter(i => pickSel.has(i)).length : linked;
+
   $("#v-recipes").innerHTML = `
   <button class="backlink" id="rback">‹ All recipes</button>
   <div class="card">
     <h2>${esc(r.title)}</h2>
     <p>${timeLabel(r.minutes)} · ${COST_LABEL(r.cost)} · ${r.healthy?"healthy":"not marked healthy"}${
       r.healthNotes ? " · " + esc(r.healthNotes) : ""}</p>
-    <button class="mini" data-raddlist="${r.id}">Add ${linked} ingredient${linked===1?"":"s"} to grocery list</button>
+    ${picking
+      ? `<p style="margin-top:0">Untick anything you already have.</p>
+         <button class="mini" data-raddlist="${r.id}">Add ${chosen} selected</button>
+         <button class="btn ghost" id="rpickcancel">Cancel</button>`
+      : `<button class="mini" data-raddlist="${r.id}">Add ${linked} ingredient${linked===1?"":"s"} to grocery list</button>
+         <button class="btn ghost" id="rpickstart">Choose ingredients…</button>`}
     ${linked < r.ingredients.length
       ? `<p style="margin-top:8px">${r.ingredients.length - linked} ingredient${r.ingredients.length-linked===1?" isn't":"s aren't"} linked to a grocery item, so ${r.ingredients.length-linked===1?"it won't":"they won't"} be added. Edit the recipe to link ${r.ingredients.length-linked===1?"it":"them"}.</p>`
       : ""}
   </div>
   <div class="card">
     <h2>Ingredients</h2>
-    <div class="list">${r.ingredients.map(g => {
+    <div class="list">${r.ingredients.map((g,i) => {
       const it = g.itemId ? byId(g.itemId) : null;
-      return `<div class="row"><span class="grow"><span class="name">${esc(g.text)}</span>
-        <span class="meta">${it ? esc(it.name) : "not linked to a grocery item"}</span></span></div>`;
+      const already = it && state.checked[it.id];
+      const note = it ? (already ? esc(it.name) + " · already on the list" : esc(it.name))
+                      : "not linked to a grocery item";
+      // Only a linked ingredient can be shopped for, so only those are tickable.
+      if (!picking || !it)
+        return `<div class="row"><span class="grow"><span class="name">${esc(g.text)}</span>
+          <span class="meta">${note}</span></span></div>`;
+      const on = pickSel.has(i);
+      return `<div class="row ${on?"":"done"}">
+        <button class="tap" data-rpick="${i}">
+          <span class="box" style="${on?"":"opacity:.35"}">${TICK}</span>
+          <span class="grow"><span class="name">${esc(g.text)}</span>
+            <span class="meta">${note}</span></span>
+        </button>
+      </div>`;
     }).join("") || `<div class="row"><span class="c">No ingredients recorded.</span></div>`}</div>
   </div>
   <div class="card">
@@ -1305,7 +1330,7 @@ document.addEventListener("click", e => {
 
   /* ---- recipes ---- */
   if (t.closest("#rnew")){ draft = blankDraft(); renderRecipeEdit(); window.scrollTo(0,0); return; }
-  if (t.closest("#rback")){ openRecipe = null; renderRecipes(); window.scrollTo(0,0); return; }
+  if (t.closest("#rback")){ openRecipe = null; pickSel = null; renderRecipes(); window.scrollTo(0,0); return; }
   if (t.closest("#rcancel")){ draft = null; renderRecipes(); window.scrollTo(0,0); return; }
   if (t.closest("#rsave")){ saveDraft(); return; }
   if (t.closest("#rpickfile")){ $("#rfile").click(); return; }
@@ -1324,14 +1349,33 @@ document.addEventListener("click", e => {
   }
 
   const ro = t.closest("[data-ropen]");
-  if (ro){ openRecipe = ro.dataset.ropen; renderRecipes(); window.scrollTo(0,0); return; }
+  if (ro){ openRecipe = ro.dataset.ropen; pickSel = null; renderRecipes(); window.scrollTo(0,0); return; }
+
+  if (t.closest("#rpickstart")){
+    const r = recipeById(openRecipe);
+    // Everything shoppable starts ticked; it's quicker to remove the few you
+    // already have than to re-pick the whole list.
+    pickSel = new Set(r.ingredients.map((g,i)=>i)
+      .filter(i => r.ingredients[i].itemId && byId(r.ingredients[i].itemId)));
+    renderRecipes();
+    return;
+  }
+  if (t.closest("#rpickcancel")){ pickSel = null; renderRecipes(); return; }
+
+  const rp = t.closest("[data-rpick]");
+  if (rp){
+    const i = +rp.dataset.rpick;
+    if (pickSel.has(i)) pickSel.delete(i); else pickSel.add(i);
+    renderRecipes();
+    return;
+  }
 
   const red = t.closest("[data-redit]");
   if (red){
     const r = recipeById(red.dataset.redit);
     // Deep copy: editing must not mutate saved state until Save.
     draft = JSON.parse(JSON.stringify(r));
-    openRecipe = null; renderRecipeEdit(); window.scrollTo(0,0);
+    openRecipe = null; pickSel = null; renderRecipeEdit(); window.scrollTo(0,0);
     return;
   }
 
@@ -1341,7 +1385,7 @@ document.addEventListener("click", e => {
     if (!r || !confirm(`Delete “${r.title}”?\n\nThis can't be undone. Your grocery items aren't affected.`)) return;
     state.recipes = state.recipes.filter(x => x.id !== r.id);
     enqueue("DELETE", "/api/recipes/" + encodeURIComponent(r.id));
-    openRecipe = null; save(); render();
+    openRecipe = null; pickSel = null; save(); render();
     toast("Recipe deleted");
     return;
   }
@@ -1351,12 +1395,15 @@ document.addEventListener("click", e => {
     const r = recipeById(radd.dataset.raddlist);
     if (!r) return;
     let n = 0;
-    for (const g of r.ingredients){
+    for (let gi = 0; gi < r.ingredients.length; gi++){
+      const g = r.ingredients[gi];
+      if (pickSel && !pickSel.has(gi)) continue;
       if (!g.itemId || !byId(g.itemId) || state.checked[g.itemId]) continue;
       state.checked[g.itemId] = { qty:1, store:null };
       enqueue("PUT", "/api/checked/" + encodeURIComponent(g.itemId), toServerChecked(state.checked[g.itemId]));
       n++;
     }
+    pickSel = null;
     save(); render();
     toast(n ? `Added ${n} item${n===1?"":"s"} to the list` : "Those items are already on the list");
     return;
