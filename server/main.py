@@ -424,6 +424,10 @@ def delete_recipe(recipe_id: str):
 class ExtractedIngredient(BaseModel):
     text: str
     item_id: Optional[str] = None
+    # Used only when item_id is null: what this ingredient should be called as a
+    # grocery item, so an unmatched ingredient can still reach the list.
+    item_name: Optional[str] = None
+    category: Optional[str] = None
 
 
 class ExtractedRecipe(BaseModel):
@@ -453,7 +457,18 @@ Rules:
 - `ingredients[].item_id` links to the household's grocery inventory. Use an id
   from the supplied list when the ingredient is clearly that item; otherwise
   null. Never invent an id. A rough match is fine (mozzarella -> a shredded
-  cheese item); a wrong one is worse than null, since null just asks the user."""
+  cheese item); a wrong one is worse than null, since null just asks the user.
+- When `item_id` is null, fill `item_name` and `category` so the ingredient can
+  still be shopped for:
+    - `item_name` is what you'd look for in a shop, not the recipe wording:
+      "2 medium sweet potatoes, cut into cubes" -> "Sweet Potatoes";
+      "4 cloves garlic, minced" -> "Garlic".
+      Title Case, no quantities, no preparation, singular or plural as it would
+      appear on a shelf.
+    - `category` must be one of the supplied category names.
+    - Leave both null for things nobody buys per recipe - "salt and pepper to
+      taste", "water", "ice" - when they aren't already in the inventory.
+  When `item_id` is set, leave `item_name` and `category` null."""
 
 
 def _extract_blocks(text: Optional[str], upload_bytes: Optional[bytes], media_type: Optional[str]):
@@ -497,6 +512,8 @@ async def extract_recipe(text: Optional[str] = Form(None), file: Optional[Upload
     with get_conn() as conn:
         inventory = [{"id": r["id"], "name": r["name"], "category": r["category"]} for r in conn.execute(
             "SELECT id, name, category FROM items WHERE deleted_at IS NULL ORDER BY category, name")]
+        categories = [r["name"] for r in conn.execute(
+            "SELECT name FROM categories WHERE deleted_at IS NULL ORDER BY position")]
 
     import anthropic
     client = anthropic.Anthropic()
@@ -509,7 +526,8 @@ async def extract_recipe(text: Optional[str] = Form(None), file: Optional[Upload
             messages=[
                 {"role": "user", "content": [{"type": "text",
                  "text": "Grocery inventory to link ingredients against:\n" +
-                         "\n".join(f"{i['id']} = {i['name']} ({i['category']})" for i in inventory)}]},
+                         "\n".join(f"{i['id']} = {i['name']} ({i['category']})" for i in inventory) +
+                         "\n\nCategories available for new items:\n" + ", ".join(categories)}]},
                 {"role": "user", "content": _extract_blocks(text, upload_bytes, media_type)},
             ],
             output_format=ExtractedRecipe,
@@ -529,7 +547,16 @@ async def extract_recipe(text: Optional[str] = Form(None), file: Optional[Upload
     # Never trust a returned id: a hallucinated one would silently attach an
     # ingredient to the wrong grocery item.
     valid = {i["id"] for i in inventory}
+    known_cats = set(categories)
     for ing in recipe.ingredients:
         if ing.item_id not in valid:
             ing.item_id = None
+        if ing.item_id:
+            # A matched ingredient needs no new item.
+            ing.item_name = ing.category = None
+        elif ing.item_name:
+            # Fall back rather than drop it: an odd category is easy to fix,
+            # a missing ingredient on shopping day is not.
+            if ing.category not in known_cats:
+                ing.category = "Pantry" if "Pantry" in known_cats else (categories[0] if categories else "Pantry")
     return recipe

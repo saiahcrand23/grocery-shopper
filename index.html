@@ -1064,8 +1064,9 @@ function renderRecipeEdit(){
       return `<div class="erow">
         <input class="editname" value="${esc(g.text)}" data-ringtext="${i}">
         <div class="ectl">
-          <button class="flag ${it?"on":""}" data-ringlink="${i}">${it ? esc(it.name) : "Link item"}</button>
-          ${it ? "" : `<button class="flag" data-ringcreate="${i}">Create item</button>`}
+          <button class="flag ${it?"on":""}" data-ringlink="${i}">${
+            it ? esc(it.name) : (g.newName ? "will add: "+esc(g.newName) : "Link item")}</button>
+          ${it ? "" : `<button class="flag" data-ringcreate="${i}">${g.newName ? "Change" : "Create item"}</button>`}
           <button class="del" data-ringdel="${i}">Remove</button>
         </div>
       </div>`;
@@ -1097,11 +1098,39 @@ function pickItemFor(idx){
   });
 }
 
+/* An ingredient with nothing behind it can't reach the shopping list, which
+   silently drops it on the day you actually need it. So anything still
+   unlinked at save time becomes a real grocery item — non-staple, so the Shop
+   tab's Regulars filter keeps it out of the way, and Wal-Mart by default. */
+function materializeIngredients(){
+  let made = 0;
+  for (const g of draft.ingredients){
+    if (g.itemId && byId(g.itemId)) continue;
+    const name = (g.newName || "").trim();
+    if (!name){ g.itemId = null; continue; }
+    // Reuse an existing item of the same name rather than making a duplicate —
+    // several recipes will call for garlic.
+    const existing = state.items.find(i => !i.oneoff && i.name.toLowerCase() === name.toLowerCase());
+    if (existing){ g.itemId = existing.id; continue; }
+    const cat = state.cats.includes(g.newCat) ? g.newCat : (state.cats[0] || "Pantry");
+    const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store: 0, staple: false, oneoff: false };
+    state.items.push(it);
+    enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+    g.itemId = it.id;
+    made++;
+  }
+  return made;
+}
+
 function saveDraft(){
   syncDraftFields();
   if (!draft.title.trim()) return toast("Give the recipe a title first");
   draft.title = draft.title.trim();
   draft.ingredients = draft.ingredients.filter(g => g.text.trim());
+  const made = materializeIngredients();
+  // Strip the transient suggestion fields so the stored shape matches exactly
+  // what the server round-trips back — otherwise every poll reads as a change.
+  draft.ingredients = draft.ingredients.map(g => ({ text: g.text, itemId: g.itemId || null }));
   const existing = state.recipes.findIndex(r => r.id === draft.id);
   if (existing >= 0) state.recipes[existing] = draft; else state.recipes.push(draft);
   state.recipes.sort((a,b) => a.title.localeCompare(b.title));
@@ -1109,7 +1138,7 @@ function saveDraft(){
   const id = draft.id;
   draft = null; openRecipe = id;
   save(); render(); window.scrollTo(0,0);
-  toast("Recipe saved");
+  toast(made ? `Recipe saved · ${made} new item${made===1?"":"s"} added` : "Recipe saved");
 }
 
 async function extractRecipe(body, label){
@@ -1137,7 +1166,8 @@ async function extractRecipe(body, label){
     draft.healthy = !!data.healthy;
     draft.healthNotes = draft.healthNotes || data.health_notes || "";
     draft.ingredients = draft.ingredients.concat(
-      (data.ingredients || []).map(g => ({ text: g.text, itemId: g.item_id || null })));
+      (data.ingredients || []).map(g => ({ text: g.text, itemId: g.item_id || null,
+                                           newName: g.item_name || null, newCat: g.category || null })));
     renderRecipeEdit();
     const linked = draft.ingredients.filter(g => g.itemId).length;
     toast(`Read ${draft.ingredients.length} ingredients, ${linked} linked`);
