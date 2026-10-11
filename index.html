@@ -663,17 +663,30 @@ $("#tabs").onclick = e => {
 };
 
 /* ---------- shop view ---------- */
-let query = "", activeCat = "";
+let query = "", activeCat = "", staplesOnly = true;
+
+/* Items in an interchangeable category count as staples here. That flag already
+   means "this group is always needed" — no single fruit is a staple, but
+   produce is a weekly constant, and filtering it off the Shop tab would hide
+   exactly the things most likely to be bought. */
+const isRegular = i => i.staple || state.interchangeable.includes(i.cat);
 
 function renderShop(){
   const q = query.trim().toLowerCase();
-  const stock = inventory();
+  const all = inventory();
+  // A search is an explicit request for one thing, so it looks at everything —
+  // otherwise searching for a hidden item would silently return nothing. The
+  // chips (and the filter control) are hidden while searching anyway.
+  const stock = (staplesOnly && !q) ? all.filter(isRegular) : all;
+  const hidden = all.length - stock.length;
   const cats = state.cats.filter(c => stock.some(i=>i.cat===c));
 
   $("#tools").innerHTML =
     `<input class="search" id="q" type="search" placeholder="Search items" value="${esc(query)}">` +
-    (q ? "" : `<div class="chips">${cats.map(c=>
-      `<button class="chip ${activeCat===c?"on":""}" data-c="${esc(c)}">${esc(c)}</button>`).join("")}</div>`);
+    (q ? "" : `<div class="chips">
+      <button class="chip ${staplesOnly?"on":""}" data-staplefilter="1">${staplesOnly?"Regulars":"Everything"}</button>` +
+      cats.map(c=>`<button class="chip ${activeCat===c?"on":""}" data-c="${esc(c)}">${esc(c)}</button>`).join("") +
+    `</div>`);
 
   const shown = cats.map(c => [c, stock.filter(i =>
       i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
@@ -686,10 +699,18 @@ function renderShop(){
         s.kind === "group" ? groupRowHTML(s) : rowHTML(s.item, s.note)).join("")}</div>`
     : "";
 
-  $("#v-shop").innerHTML = shown.length ? sugHTML + shown.map(([c,arr]) =>
+  // Say what's being withheld. A filter that's on by default must never leave
+  // someone hunting for an item they think they've lost.
+  const footer = (staplesOnly && !q && hidden)
+    ? `<p style="font-size:12px;color:var(--muted);text-align:center;margin:16px 4px 0;line-height:1.5">
+         ${hidden} occasional item${hidden===1?"":"s"} hidden.
+         <button data-staplefilter="1" style="color:var(--accent);font-weight:600">Show everything</button></p>`
+    : "";
+
+  $("#v-shop").innerHTML = (shown.length ? sugHTML + shown.map(([c,arr]) =>
     `<div class="cat" id="cat-${slug(c)}">${esc(c)}</div>
      <div class="list">${arr.map(i => rowHTML(i)).join("")}</div>`).join("")
-    : `<div class="empty">No items match “${esc(query)}”</div>`;
+    : `<div class="empty">No items match “${esc(query)}”</div>`) + footer;
 }
 
 function rowHTML(i, note){
@@ -1348,6 +1369,13 @@ document.addEventListener("click", e => {
   const hv = t.closest("[data-hv]");
   if (hv){ histView = hv.dataset.hv; renderHist(); window.scrollTo(0,0); return; }
 
+  if (t.closest("[data-staplefilter]")){
+    staplesOnly = !staplesOnly;
+    activeCat = "";
+    renderShop(); window.scrollTo(0,0);
+    return;
+  }
+
   const goc = t.closest("[data-gocat]");
   if (goc){
     activeCat = goc.dataset.gocat;
@@ -1526,7 +1554,7 @@ document.addEventListener("input", e => {
   if (e.target.id === "q"){ query = e.target.value; activeCat = "";
     const shop = $("#v-shop"); const q = query.trim().toLowerCase();
     // re-render list only, so the input keeps focus
-    const stock = inventory();
+    const stock = inventory();   // search looks past the regulars filter
     const cats = state.cats.filter(c => stock.some(i=>i.cat===c));
     const shown = cats.map(c => [c, stock.filter(i => i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
       .filter(([,a]) => a.length);
