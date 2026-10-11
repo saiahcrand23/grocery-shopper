@@ -1024,9 +1024,11 @@ function renderRecipeDetail(id){
         return `<div class="row"><span class="grow"><span class="name">${esc(g.text)}</span>
           <span class="meta">${note}</span></span></div>`;
       const on = pickSel.has(i);
-      return `<div class="row ${on?"":"done"}">
+      // .row.done is what draws the tick and fills the circle — same visual
+      // language as checking an item off on Shop.
+      return `<div class="row ${on?"done":""}">
         <button class="tap" data-rpick="${i}">
-          <span class="box" style="${on?"":"opacity:.35"}">${TICK}</span>
+          <span class="box">${TICK}</span>
           <span class="grow"><span class="name">${esc(g.text)}</span>
             <span class="meta">${note}</span></span>
         </button>
