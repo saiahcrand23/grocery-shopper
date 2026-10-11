@@ -77,6 +77,8 @@ main{padding:0 16px calc(96px + env(safe-area-inset-bottom))}
   display:flex;align-items:center;justify-content:space-between;gap:10px}
 .catname{font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;
   padding:2px 0;text-align:left}
+.backlink{display:block;color:var(--accent);font-size:15px;font-weight:600;
+  padding:4px 0 12px;text-align:left}
 /* Flag pills sit at store-pill size; colour alone carries on vs off. */
 .flag{flex:0 0 auto;font-size:11px;font-weight:700;padding:5px 9px;border-radius:7px;
   border:1px solid var(--line);color:var(--muted);letter-spacing:.01em;text-transform:none}
@@ -951,6 +953,7 @@ function visibleRecipes(){
 }
 
 function renderRecipes(){
+  if (openRecipe){ $("#tools").innerHTML = ""; return renderRecipeDetail(openRecipe); }
   $("#tools").innerHTML =
     `<input class="search" id="rq" type="search" placeholder="Search recipes" value="${esc(rQuery)}">
      <div class="chips">
@@ -960,8 +963,6 @@ function renderRecipes(){
        <button class="chip ${rHealthyOnly?"on":""}" data-rhealthy="1">Healthy</button>
        <button class="chip ${rIngFilter.length?"on":""}" data-ringfilter="1">Ingredients${rIngFilter.length?" · "+rIngFilter.length:""}</button>
      </div>`;
-
-  if (openRecipe) return renderRecipeDetail(openRecipe);
 
   const list = visibleRecipes();
   const header = `<button class="btn" id="rnew">Add a recipe</button>`;
@@ -989,7 +990,7 @@ function renderRecipeDetail(id){
   if (!r){ openRecipe = null; return renderRecipes(); }
   const linked = r.ingredients.filter(g => g.itemId && byId(g.itemId)).length;
   $("#v-recipes").innerHTML = `
-  <button class="btn ghost" id="rback" style="margin-top:0">‹ All recipes</button>
+  <button class="backlink" id="rback">‹ All recipes</button>
   <div class="card">
     <h2>${esc(r.title)}</h2>
     <p>${timeLabel(r.minutes)} · ${COST_LABEL(r.cost)} · ${r.healthy?"healthy":"not marked healthy"}${
