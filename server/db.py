@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS recipes (
   cost INTEGER,
   healthy INTEGER NOT NULL DEFAULT 0,
   health_notes TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL,
   deleted_at TEXT
 );
@@ -88,6 +89,7 @@ def init_db():
         conn.executescript(SCHEMA)
         _ensure_column(conn, "items", "staple", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "items", "oneoff", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "recipes", "source_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "categories", "interchangeable", "INTEGER NOT NULL DEFAULT 0")
 
 

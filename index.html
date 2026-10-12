@@ -386,12 +386,13 @@ const fromServerChecked = r => ({ qty: r.qty, store: r.store_override });
 const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store: l.store, qty: l.qty });
 const fromServerLine = l => ({ id: l.item_id, name: l.name, cat: l.category, store: l.store, qty: l.qty });
 const toServerRecipe = r => ({ title: r.title, instructions: r.instructions, minutes: r.minutes,
-  cost: r.cost, healthy: !!r.healthy, health_notes: r.healthNotes,
+  cost: r.cost, healthy: !!r.healthy, health_notes: r.healthNotes, source_url: r.sourceUrl || "",
   ingredients: r.ingredients.map(g => ({ text: g.text, item_id: g.itemId })) });
 // Key order here is the canonical one — every other place a recipe is built
 // must match it, or the poll's snapshot comparison sees a change every tick.
 const fromServerRecipe = r => ({ id: r.id, title: r.title, instructions: r.instructions,
   minutes: r.minutes, cost: r.cost, healthy: !!r.healthy, healthNotes: r.health_notes,
+  sourceUrl: r.source_url || "",
   ingredients: r.ingredients.map(g => ({ text: g.text, itemId: g.item_id })) });
 
 const orderId = () => (crypto.randomUUID ? crypto.randomUUID() : uid()+uid()+uid());
@@ -823,6 +824,8 @@ function renderHist(){
 const relDay = d =>
   d < 1 ? "today" : d < 2 ? "yesterday" : `${Math.round(d)} days ago`;
 
+const safeUrl = u => /^https?:\/\//i.test((u || "").trim()) ? u.trim() : null;
+
 /* Trends reports on everything that's been bought, staple or not — it's an
    observation tool, unlike suggestions, which assert you need something. */
 function renderTrends(){
@@ -1046,6 +1049,10 @@ function renderRecipeDetail(id){
     <h2>${esc(r.title)}</h2>
     <p>${timeLabel(r.minutes)} · ${COST_LABEL(r.cost)} · ${r.healthy?"healthy":"not marked healthy"}${
       r.healthNotes ? " · " + esc(r.healthNotes) : ""}</p>
+    ${r.sourceUrl ? (safeUrl(r.sourceUrl)
+      ? `<p style="margin-top:0"><a href="${esc(safeUrl(r.sourceUrl))}" target="_blank" rel="noopener noreferrer"
+           style="color:var(--accent);font-weight:600">View the original ›</a></p>`
+      : `<p style="margin-top:0">Source: ${esc(r.sourceUrl)}</p>`) : ""}
     ${picking
       ? `<p style="margin-top:0">Untick anything you already have.</p>
          <button class="mini" data-raddlist="${r.id}">Add ${chosen} selected</button>
@@ -1092,7 +1099,7 @@ function renderRecipeDetail(id){
 let draft = null;
 
 const blankDraft = () => ({ id: "r_"+uid()+uid(), title:"", instructions:"", minutes:null,
-  cost:2, healthy:false, healthNotes:"", ingredients:[] });
+  cost:2, healthy:false, healthNotes:"", sourceUrl:"", ingredients:[] });
 
 function renderRecipeEdit(){
   const d = draft;
@@ -1124,6 +1131,8 @@ function renderRecipeEdit(){
     </div>
     <label class="meta" style="margin-top:10px;display:block">Health notes</label>
     <input class="field" id="rnotes" value="${esc(d.healthNotes)}" placeholder="e.g. high protein, low carb">
+    <label class="meta">Source link (optional)</label>
+    <input class="field" id="rurl" type="url" inputmode="url" value="${esc(d.sourceUrl || "")}" placeholder="https://…">
     <label class="meta">Instructions</label>
     <textarea class="field" id="rinstr" rows="6" placeholder="Method…">${esc(d.instructions)}</textarea>
   </div>
@@ -1153,7 +1162,8 @@ function renderRecipeEdit(){
 // Pull the free-text fields into the draft before any re-render, or typing is lost.
 function syncDraftFields(){
   if (!draft) return;
-  const t = $("#rtitle"), m = $("#rmin"), n = $("#rnotes"), i = $("#rinstr");
+  const t = $("#rtitle"), m = $("#rmin"), n = $("#rnotes"), i = $("#rinstr"), u = $("#rurl");
+  if (u) draft.sourceUrl = u.value.trim();
   if (t) draft.title = t.value;
   if (m) draft.minutes = m.value === "" ? null : Math.max(0, parseInt(m.value, 10) || 0);
   if (n) draft.healthNotes = n.value;
@@ -1203,6 +1213,7 @@ function saveDraft(){
   // Strip the transient suggestion fields so the stored shape matches exactly
   // what the server round-trips back — otherwise every poll reads as a change.
   draft.ingredients = draft.ingredients.map(g => ({ text: g.text, itemId: g.itemId || null }));
+  delete draft.newName; delete draft.newCat;
   const existing = state.recipes.findIndex(r => r.id === draft.id);
   if (existing >= 0) state.recipes[existing] = draft; else state.recipes.push(draft);
   state.recipes.sort((a,b) => a.title.localeCompare(b.title));
@@ -1231,6 +1242,7 @@ function recipeFromExtract(data){
   const r = { id: "r_"+uid()+uid(), title: (data.title || "").trim(),
     instructions: data.instructions || "", minutes: data.minutes ?? null,
     cost: data.cost || 2, healthy: !!data.healthy, healthNotes: data.health_notes || "",
+    sourceUrl: data.source_url || "",
     ingredients: (data.ingredients || []).map(g => ({ text: g.text, itemId: g.item_id || null,
       newName: g.item_name || null, newCat: g.category || null })) };
   const made = materializeIngredients(r.ingredients);
@@ -1300,6 +1312,7 @@ async function extractRecipe(body, label){
     draft.cost = data.cost || draft.cost;
     draft.healthy = !!data.healthy;
     draft.healthNotes = draft.healthNotes || data.health_notes || "";
+    draft.sourceUrl = draft.sourceUrl || data.source_url || "";
     draft.ingredients = draft.ingredients.concat(
       (data.ingredients || []).map(g => ({ text: g.text, itemId: g.item_id || null,
                                            newName: g.item_name || null, newCat: g.category || null })));

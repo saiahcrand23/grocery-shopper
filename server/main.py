@@ -83,6 +83,7 @@ class RecipeIn(BaseModel):
     cost: Optional[int] = None
     healthy: bool = False
     health_notes: str = ""
+    source_url: str = ""
     ingredients: list[IngredientIn] = []
 
 
@@ -143,7 +144,7 @@ def _history(conn):
 
 def _recipes(conn):
     rows = conn.execute(
-        """SELECT id, title, instructions, minutes, cost, healthy, health_notes
+        """SELECT id, title, instructions, minutes, cost, healthy, health_notes, source_url
            FROM recipes WHERE deleted_at IS NULL ORDER BY title"""
     ).fetchall()
     out = []
@@ -392,15 +393,15 @@ def upsert_recipe(recipe_id: str, body: RecipeIn):
         ts = now()
         conn.execute(
             """
-            INSERT INTO recipes (id, title, instructions, minutes, cost, healthy, health_notes, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO recipes (id, title, instructions, minutes, cost, healthy, health_notes, source_url, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
               title=excluded.title, instructions=excluded.instructions, minutes=excluded.minutes,
               cost=excluded.cost, healthy=excluded.healthy, health_notes=excluded.health_notes,
-              updated_at=excluded.updated_at, deleted_at=NULL
+              source_url=excluded.source_url, updated_at=excluded.updated_at, deleted_at=NULL
             """,
             (recipe_id, body.title, body.instructions, body.minutes, body.cost,
-             int(body.healthy), body.health_notes, ts),
+             int(body.healthy), body.health_notes, body.source_url, ts),
         )
         # Ingredients are replaced wholesale — the client always sends the full list.
         conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
@@ -437,6 +438,7 @@ class ExtractedRecipe(BaseModel):
     cost: Optional[int] = None
     healthy: bool
     health_notes: str
+    source_url: str = ""
     ingredients: list[ExtractedIngredient] = []
 
 
@@ -453,6 +455,9 @@ Rules:
 - `cost` is a rough grocery cost: 1 cheap, 2 moderate, 3 expensive. Never null.
 - `healthy` is a plain yes/no judgement for everyday home cooking.
 - `health_notes` is one short phrase, e.g. "high protein, low carb".
+- `source_url` is the recipe's web address if one is visible on the page or in
+  the text (printouts often carry it in a header or footer). Empty string if
+  there isn't one. Never guess or construct a URL.
 - `ingredients[].text` is the ingredient exactly as written, quantity included.
 - `ingredients[].item_id` links to the household's grocery inventory. Use an id
   from the supplied list when the ingredient is clearly that item; otherwise
