@@ -1,6 +1,9 @@
 import base64
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from html import escape
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +11,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 from db import get_conn, init_db
@@ -68,7 +71,47 @@ li{display:flex;align-items:center;gap:7px;padding:0 0 7px}
 .slot p{margin:2px 0 0;font-size:11px;line-height:1.3;min-height:13px}
 @page{size:A4;margin:12mm}
 @media screen{body{max-width:820px;margin:0 auto}}
+/* A standalone web app has no browser chrome, so this page has to offer its
+   own way back or there's no escape from it. */
+.back{margin:28px 0 0;text-align:center}
+.back a{color:#8a6a60;font-size:13px;text-decoration:none}
+@media print{.back{display:none}}
 """
+
+
+def _chrome():
+    for exe in ("google-chrome", "chromium", "chromium-browser"):
+        path = shutil.which(exe)
+        if path:
+            return path
+    return None
+
+
+@app.get("/print/meal-plan.pdf")
+def meal_plan_pdf():
+    """A PDF, because iOS can hand that to the share sheet — which is the only
+    place an installed web app can reach a Print option. Rendered from the HTML
+    route above so there's one layout, not two."""
+    chrome = _chrome()
+    if not chrome:
+        raise HTTPException(status_code=503, detail="No browser on the server to build the PDF with.")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "plan.pdf")
+        try:
+            subprocess.run([chrome, "--headless", "--disable-gpu", "--no-sandbox",
+                            "--no-pdf-header-footer", f"--print-to-pdf={out}",
+                            f"--user-data-dir={tmp}/profile",
+                            "http://127.0.0.1:8000/print/meal-plan"],
+                           capture_output=True, timeout=60, check=True)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="Building the PDF took too long.")
+        except subprocess.CalledProcessError:
+            raise HTTPException(status_code=500, detail="Couldn't build the PDF.")
+        if not os.path.exists(out):
+            raise HTTPException(status_code=500, detail="Couldn't build the PDF.")
+        return Response(open(out, "rb").read(), media_type="application/pdf",
+                        headers={"content-disposition": 'inline; filename="meal-plan.pdf"',
+                                 "cache-control": "no-store"})
 
 DAYS_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 DAYS_ABBR = ["MON", "TUES", "WED", "THURS", "FRI", "SAT", "SUN"]
@@ -113,7 +156,7 @@ def print_meal_plan():
   </aside>
   <div class="days">{days}</div>
 </div>
-<script>window.addEventListener("load", () => setTimeout(() => window.print(), 300));</script>
+<p class="back"><a href="/">&lsaquo; Back to the app</a></p>
 </body></html>""", headers=SHELL_HEADERS)
 
 

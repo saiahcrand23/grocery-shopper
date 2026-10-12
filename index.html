@@ -1611,12 +1611,7 @@ document.addEventListener("click", e => {
     });
     return;
   }
-  if (t.closest("#cookprint")){
-    // window.print() is a no-op in an iOS home-screen app, so the printable
-    // page is served separately and opened in the browser, which can print.
-    window.open(API_BASE + "/print/meal-plan", "_blank");
-    return;
-  }
+  if (t.closest("#cookprint")){ shareMealPlan(); return; }
   if (t.closest("#cookclear")){
     if (!confirm("Clear the week?\n\nThis only empties the plan — your recipes and grocery list are untouched.")) return;
     for (const r of planned()) setPlannedDay(r, null);
@@ -2150,6 +2145,40 @@ function printOrder(){
     const it = byId(id);
     return { name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
   }));
+}
+
+const standalone = () => window.navigator.standalone === true ||
+  (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+
+/* Printing from an installed web app is awkward: window.print() does nothing,
+   and opening a page traps you in a chrome-less webview with no way back. The
+   share sheet is the one route that reaches a Print option, so the plan is
+   fetched as a PDF and handed to it. */
+async function shareMealPlan(){
+  if (!planned().length) return toast("Nothing planned to print yet");
+  toast("Preparing the plan…");
+  try {
+    const res = await fetch(API_BASE + "/print/meal-plan.pdf");
+    if (!res.ok){
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || "Couldn't build the plan");
+    }
+    const file = new File([await res.blob()], "meal-plan.pdf", { type: "application/pdf" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file], title: "Weekly Meal Plan" });
+      return;
+    }
+    if (standalone()) {
+      // Opening it here would strand them again, so say what to do instead.
+      return toast("Open grocery.crandnet.com in Safari to print");
+    }
+    const url = URL.createObjectURL(file);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    if (e && e.name === "AbortError") return;   // share sheet dismissed
+    toast(e.message || "Couldn't prepare the plan");
+  }
 }
 
 function printPastOrder(id){
