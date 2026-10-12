@@ -50,15 +50,19 @@ body{margin:0;background:#fff;color:#4a2f28;padding:34px;
 h1{font-family:Georgia,"Times New Roman",serif;font-weight:400;font-size:40px;
   text-align:center;color:#5a3a32;margin:0 0 26px}
 .body{display:flex;gap:22px;align-items:flex-start}
-.side{flex:0 0 33%}
+.side{flex:0 0 46%}
 .wk{display:flex;align-items:center;gap:8px;margin-bottom:16px}
 .wk span{background:#f6b8bc;border-radius:999px;padding:5px 9px;font-size:9px;letter-spacing:.08em}
 .wk b{flex:1;background:#fbd3d6;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:400}
 .side h2{font-size:12px;letter-spacing:.12em;margin:0 0 10px;color:#5a3a32}
-ul{list-style:none;margin:0;padding:0}
-li{display:flex;align-items:center;gap:7px;padding:0 0 7px}
-.box{width:19px;height:13px;border-radius:999px;background:#f6b8bc;flex:0 0 auto}
-.line{flex:1;background:#fbd3d6;border-radius:999px;padding:3px 9px;font-size:10.5px;min-height:13px}
+/* Two columns: a real week runs to 50+ items, which spilled onto a second
+   sheet while the right-hand side of page one sat empty. columns fills down
+   then across, so the list still reads in order. */
+ul{list-style:none;margin:0;padding:0;columns:2;column-gap:10px}
+li{display:flex;align-items:center;gap:6px;padding:0 0 6px;break-inside:avoid}
+.box{width:16px;height:12px;border-radius:999px;background:#f6b8bc;flex:0 0 auto}
+.line{flex:1;min-width:0;background:#fbd3d6;border-radius:999px;padding:3px 8px;
+  font-size:9.5px;line-height:1.25;min-height:12px}
 .days{flex:1}
 .day{display:flex;gap:5px;margin-bottom:9px;page-break-inside:avoid}
 .dayname{flex:0 0 34px;border-radius:9px;background:#f3e8dc;display:flex;align-items:center;
@@ -77,6 +81,12 @@ li{display:flex;align-items:center;gap:7px;padding:0 0 7px}
 .back a{color:#8a6a60;font-size:13px;text-decoration:none}
 @media print{.back{display:none}}
 """
+
+
+# Chrome has to fetch the page from this same server. Kept local and
+# overridable rather than derived from the request, whose host is the public
+# tunnel address that Access would block.
+PRINT_ORIGIN = os.environ.get("GROCERY_PRINT_ORIGIN", "http://127.0.0.1:8000")
 
 
 def _chrome():
@@ -101,7 +111,7 @@ def meal_plan_pdf():
             subprocess.run([chrome, "--headless", "--disable-gpu", "--no-sandbox",
                             "--no-pdf-header-footer", f"--print-to-pdf={out}",
                             f"--user-data-dir={tmp}/profile",
-                            "http://127.0.0.1:8000/print/meal-plan"],
+                            PRINT_ORIGIN + "/print/meal-plan"],
                            capture_output=True, timeout=60, check=True)
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=504, detail="Building the PDF took too long.")
