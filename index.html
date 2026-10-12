@@ -1069,7 +1069,9 @@ function renderRecipeDetail(id){
          <button class="mini" data-raddlist="${r.id}">Add ${chosen} selected</button>
          <button class="btn ghost" id="rpickcancel">Cancel</button>`
       : `<button class="mini" data-raddlist="${r.id}">Add ${linked} ingredient${linked===1?"":"s"} to grocery list</button>
-         <button class="btn ghost" id="rpickstart">Choose ingredients…</button>`}
+         <button class="btn ghost" id="rpickstart">Choose ingredients…</button>
+         <button class="btn ghost" data-rplan="${r.id}">${
+           r.plannedDay == null ? "Cook this week" : "Remove from this week"}</button>`}
     ${linked < r.ingredients.length
       ? `<p style="margin-top:8px">${r.ingredients.length - linked} ingredient${r.ingredients.length-linked===1?" isn't":"s aren't"} linked to a grocery item, so ${r.ingredients.length-linked===1?"it won't":"they won't"} be added. Edit the recipe to link ${r.ingredients.length-linked===1?"it":"them"}.</p>`
       : ""}
@@ -1101,7 +1103,6 @@ function renderRecipeDetail(id){
     <h2>Instructions</h2>
     <p style="white-space:pre-wrap;color:var(--text)">${esc(r.instructions) || "None recorded."}</p>
   </div>
-  <button class="btn ghost" data-rplan="${r.id}">${r.plannedDay == null ? "Cook this week" : "Remove from this week"}</button>
   <button class="btn ghost" data-redit="${r.id}">Edit recipe</button>
   <button class="btn warn" data-rdel="${r.id}">Delete recipe</button>`;
 }
