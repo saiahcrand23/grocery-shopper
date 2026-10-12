@@ -245,6 +245,38 @@ nav svg{width:22px;height:22px;flex:0 0 auto}
   #print-area ul{list-style:none;margin:0;padding:0}
   #print-area li{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:14px}
   #print-area .pbox{width:13px;height:13px;border:1.5px solid #000;flex:0 0 auto;border-radius:2px}
+
+  /* ---- weekly meal plan ---- */
+  /* Browsers drop background colour when printing unless told otherwise, and
+     this layout is nothing but tinted blocks. */
+  #print-area .mp, #print-area .mp *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  #print-area .mp{padding:0;color:#4a2f28}
+  #print-area .mp h1{font-family:Georgia,"Times New Roman",serif;font-weight:400;
+    font-size:40px;text-align:center;color:#5a3a32;margin:0 0 26px;letter-spacing:.01em}
+  #print-area .mp-body{display:flex;gap:22px;align-items:flex-start}
+  #print-area .mp-side{flex:0 0 33%}
+  #print-area .mp-wk{display:flex;align-items:center;gap:8px;margin-bottom:16px}
+  #print-area .mp-wk span{background:#f6b8bc;border-radius:999px;padding:5px 9px;
+    font-size:9px;letter-spacing:.08em;color:#5a3a32}
+  #print-area .mp-wk b{flex:1;background:#fbd3d6;border-radius:999px;padding:7px 10px;
+    font-size:11px;font-weight:400;color:#5a3a32}
+  #print-area .mp-side h2{font-size:12px;letter-spacing:.12em;border:0;color:#5a3a32;
+    margin:0 0 10px;padding:0}
+  #print-area .mp-side li{gap:7px;padding:0 0 7px}
+  #print-area .mp-side .pbox{width:19px;height:13px;border:0;border-radius:999px;background:#f6b8bc}
+  #print-area .mp-side .mpline{flex:1;background:#fbd3d6;border-radius:999px;
+    padding:3px 9px;font-size:10.5px;min-height:13px;color:#5a3a32}
+  #print-area .mp-days{flex:1}
+  #print-area .mp-day{display:flex;gap:5px;margin-bottom:9px;page-break-inside:avoid}
+  #print-area .mp-dayname{flex:0 0 34px;border-radius:9px;background:#f3e8dc;
+    display:flex;align-items:center;justify-content:center;
+    writing-mode:vertical-rl;transform:rotate(180deg);
+    font-size:10px;letter-spacing:.14em;color:#5a3a32}
+  #print-area .mp-slots{flex:1;border-radius:9px;background:#f3e8dc;padding:11px 13px;
+    display:grid;grid-template-columns:1fr 1fr;gap:9px 14px;min-height:62px}
+  #print-area .mp-day.alt .mp-dayname, #print-area .mp-day.alt .mp-slots{background:#fbd3d6}
+  #print-area .mp-slot span{display:block;font-size:8px;letter-spacing:.11em;color:#8a6a60}
+  #print-area .mp-slot p{margin:2px 0 0;font-size:11px;line-height:1.3;min-height:13px;color:#4a2f28}
 }
 </style>
 </head>
@@ -1353,6 +1385,8 @@ async function extractRecipe(body, label){
 /* ---------- cooking ----------
    planned_day: null not planned, -1 planned with no day yet, 0-6 Mon-Sun. */
 const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+// Printed sideways in the plan, so these are spelled out rather than chopped.
+const DAYS_SHORT = ["MON","TUES","WED","THURS","FRI","SAT","SUN"];
 const UNSET = -1;
 let cooking = null;          // recipe id being cooked, or null
 let cookDone = new Set();    // ingredients ticked off mid-cook; deliberately not synced
@@ -1401,7 +1435,8 @@ function renderCook(){
   $("#v-cook").innerHTML = html +
     `<button class="btn" id="cookadd">Add recipes to the week</button>` +
     (allIngredients.size ? `<button class="btn ghost" id="cookshop">Add all ${allIngredients.size} missing ingredients to the list</button>` : "") +
-    `<button class="btn warn" id="cookclear">Clear the week</button>`;
+    `<button class="btn ghost" id="cookprint">Print the meal plan</button>
+     <button class="btn warn" id="cookclear">Clear the week</button>`;
 }
 
 /* Cooking mode: bigger type, ingredients you can tick off as you go, and the
@@ -1576,6 +1611,7 @@ document.addEventListener("click", e => {
     });
     return;
   }
+  if (t.closest("#cookprint")){ printMealPlan(); return; }
   if (t.closest("#cookclear")){
     if (!confirm("Clear the week?\n\nThis only empties the plan — your recipes and grocery list are untouched.")) return;
     for (const r of planned()) setPlannedDay(r, null);
@@ -2109,6 +2145,49 @@ function printOrder(){
     const it = byId(id);
     return { name: it.name, cat: it.cat, store: STORES[storeOf(id)], qty: state.checked[id].qty || 1 };
   }));
+}
+
+/* A printable week: planned recipes drop into Dinner, the other slots stay
+   blank to fill in by hand, and this week's grocery list rides alongside so
+   it's one sheet on the fridge. */
+function printMealPlan(){
+  const list = planned();
+  const monday = new Date();
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+  const fmt = d => d.toLocaleDateString(undefined,{month:"short",day:"numeric"});
+
+  const days = DAYS.map((name, d) => {
+    const on = list.filter(r => r.plannedDay === d);
+    const slot = (label, body) =>
+      `<div class="mp-slot"><span>${label}</span><p>${body}</p></div>`;
+    return `<div class="mp-day ${d % 2 ? "alt" : ""}">
+      <div class="mp-dayname">${DAYS_SHORT[d]}</div>
+      <div class="mp-slots">
+        ${slot("BREAKFAST","")}
+        ${slot("DINNER", on.map(r => esc(r.title)).join("<br>"))}
+        ${slot("LUNCH","")}
+        ${slot("SNACK","")}
+      </div></div>`;
+  }).join("");
+
+  // Pad the shopping column so it reads as a list to fill in, not a stub.
+  const ids = checkedIds();
+  const lines = ids.map(id => esc(byId(id).name) + (state.checked[id].qty > 1 ? ` ×${state.checked[id].qty}` : ""));
+  while (lines.length < 20) lines.push("");
+
+  $("#print-area").innerHTML = `<div class="mp">
+    <h1>Weekly Meal Plan</h1>
+    <div class="mp-body">
+      <aside class="mp-side">
+        <div class="mp-wk"><span>WK</span><b>${esc(fmt(monday))} – ${esc(fmt(sunday))}</b></div>
+        <h2>GROCERY LIST :</h2>
+        <ul>${lines.map(t => `<li><span class="pbox"></span><span class="mpline">${t}</span></li>`).join("")}</ul>
+      </aside>
+      <div class="mp-days">${days}</div>
+    </div>
+  </div>`;
+  window.print();
 }
 
 function printPastOrder(id){
