@@ -827,6 +827,39 @@ const safeUrl = u => /^https?:\/\//i.test((u || "").trim()) ? u.trim() : null;
 
 /* Trends reports on everything that's been bought, staple or not — it's an
    observation tool, unlike suggestions, which assert you need something. */
+const standalone = () => window.navigator.standalone === true ||
+  (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+
+/* Printing from an installed web app is awkward: window.print() does nothing
+   there, and opening a page traps you in a chrome-less webview with no way
+   back. The share sheet is the one route that reaches a Print option, so
+   anything printable is fetched as a PDF from the server and handed to it. */
+async function sharePdf(path, filename, label){
+  toast(`Preparing the ${label}…`);
+  try {
+    const res = await fetch(API_BASE + path);
+    if (!res.ok){
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || `Couldn't build the ${label}`);
+    }
+    const file = new File([await res.blob()], filename, { type: "application/pdf" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file] });
+      return;
+    }
+    if (standalone()) {
+      // Opening it here would strand them in a view with no way out.
+      return toast("Open grocery.crandnet.com in Safari to print");
+    }
+    const url = URL.createObjectURL(file);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    if (e && e.name === "AbortError") return;   // share sheet dismissed
+    toast(e.message || `Couldn't prepare the ${label}`);
+  }
+}
+
 function renderTrends(){
   const a = analyze();
   const rows = state.items
