@@ -49,30 +49,21 @@ body{margin:0;background:#fff;color:#4a2f28;padding:34px;
   font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 h1{font-family:Georgia,"Times New Roman",serif;font-weight:400;font-size:40px;
   text-align:center;color:#5a3a32;margin:0 0 26px}
-.body{display:flex;gap:22px;align-items:flex-start}
-.side{flex:0 0 46%}
-.wk{display:flex;align-items:center;gap:8px;margin-bottom:16px}
+.body{display:block}
+.wk{display:flex;align-items:center;gap:8px;margin-bottom:18px;max-width:300px}
 .wk span{background:#f6b8bc;border-radius:999px;padding:5px 9px;font-size:9px;letter-spacing:.08em}
 .wk b{flex:1;background:#fbd3d6;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:400}
-.side h2{font-size:12px;letter-spacing:.12em;margin:0 0 10px;color:#5a3a32}
-/* Two columns: a real week runs to 50+ items, which spilled onto a second
-   sheet while the right-hand side of page one sat empty. columns fills down
-   then across, so the list still reads in order. */
-ul{list-style:none;margin:0;padding:0;columns:2;column-gap:10px}
-li{display:flex;align-items:center;gap:6px;padding:0 0 6px;break-inside:avoid}
-.box{width:16px;height:12px;border-radius:999px;background:#f6b8bc;flex:0 0 auto}
-.line{flex:1;min-width:0;background:#fbd3d6;border-radius:999px;padding:3px 8px;
-  font-size:9.5px;line-height:1.25;min-height:12px}
 .days{flex:1}
-.day{display:flex;gap:5px;margin-bottom:9px;page-break-inside:avoid}
-.dayname{flex:0 0 34px;border-radius:9px;background:#f3e8dc;display:flex;align-items:center;
+.day{display:flex;gap:6px;margin-bottom:12px;page-break-inside:avoid}
+.dayname{flex:0 0 40px;border-radius:9px;background:#f3e8dc;display:flex;align-items:center;
   justify-content:center;writing-mode:vertical-rl;transform:rotate(180deg);
   font-size:10px;letter-spacing:.14em}
-.slots{flex:1;border-radius:9px;background:#f3e8dc;padding:11px 13px;display:grid;
-  grid-template-columns:1fr 1fr;gap:9px 14px;min-height:62px}
+.slots{flex:1;border-radius:9px;background:#f3e8dc;padding:14px 18px;display:grid;
+  grid-template-columns:1fr 1fr;gap:14px 26px;min-height:86px}
 .day.alt .dayname,.day.alt .slots{background:#fbd3d6}
-.slot span{display:block;font-size:8px;letter-spacing:.11em;color:#8a6a60}
-.slot p{margin:2px 0 0;font-size:11px;line-height:1.3;min-height:13px}
+.slot span{display:block;font-size:8.5px;letter-spacing:.12em;color:#8a6a60}
+.slot p{margin:3px 0 0;font-size:12.5px;line-height:1.35;min-height:16px}
+.slot em{font-style:normal;font-size:10px;color:#a1837a;white-space:nowrap}
 @page{size:A4;margin:12mm}
 @media screen{body{max-width:820px;margin:0 auto}}
 /* A standalone web app has no browser chrome, so this page has to offer its
@@ -135,37 +126,26 @@ def print_meal_plan():
     from datetime import date, timedelta
     with get_conn() as conn:
         recipes = [r for r in _recipes(conn) if r["planned_day"] is not None]
-        checked = _checked(conn)
-        names = {r["id"]: r["name"] for r in conn.execute(
-            "SELECT id, name FROM items WHERE deleted_at IS NULL")}
 
     monday = date.today() - timedelta(days=date.today().weekday())
     span = f"{monday:%b %-d} – {monday + timedelta(days=6):%b %-d}"
 
     days = ""
     for d in range(7):
-        dinner = "<br>".join(escape(r["title"]) for r in recipes if r["planned_day"] == d)
+        dinner = "<br>".join(
+            escape(r["title"]) + (f' <em>{r["minutes"]}m</em>' if r["minutes"] else "")
+            for r in recipes if r["planned_day"] == d)
         slots = "".join(f'<div class="slot"><span>{lbl}</span><p>{val}</p></div>'
                         for lbl, val in (("BREAKFAST", ""), ("DINNER", dinner), ("LUNCH", ""), ("SNACK", "")))
         days += (f'<div class="day{" alt" if d % 2 else ""}">'
                  f'<div class="dayname">{DAYS_ABBR[d]}</div><div class="slots">{slots}</div></div>')
 
-    lines = [escape(names[i]) + (f" ×{c['qty']}" if c["qty"] > 1 else "")
-             for i, c in checked.items() if i in names]
-    lines += [""] * max(0, 20 - len(lines))
-    items = "".join(f'<li><span class="box"></span><span class="line">{t}</span></li>' for t in lines)
-
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Weekly Meal Plan</title><style>{MEAL_PLAN_CSS}</style></head><body>
 <h1>Weekly Meal Plan</h1>
-<div class="body">
-  <aside class="side">
-    <div class="wk"><span>WK</span><b>{span}</b></div>
-    <h2>GROCERY LIST :</h2><ul>{items}</ul>
-  </aside>
-  <div class="days">{days}</div>
-</div>
+<div class="wk"><span>WK</span><b>{span}</b></div>
+<div class="body"><div class="days">{days}</div></div>
 <p class="back"><a href="/">&lsaquo; Back to the app</a></p>
 </body></html>""", headers=SHELL_HEADERS)
 
