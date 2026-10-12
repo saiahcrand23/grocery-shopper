@@ -79,6 +79,13 @@ main{padding:0 16px calc(96px + env(safe-area-inset-bottom))}
   padding:2px 0;text-align:left}
 .backlink{display:block;color:var(--accent);font-size:15px;font-weight:600;
   padding:4px 0 12px;text-align:left}
+/* Cooking mode is read at arm's length, so everything here is a size up. */
+.cookline{display:block;font-size:17px;line-height:1.35}
+.row.done .cookline{color:var(--muted);text-decoration:line-through}
+.step{display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--line);font-size:16px;line-height:1.5}
+.step:first-of-type{border-top:0}
+.step b{flex:0 0 26px;height:26px;border-radius:999px;background:var(--accent);color:#fff;
+  font-size:13px;display:grid;place-items:center}
 /* Flag pills sit at store-pill size; colour alone carries on vs off. */
 .flag{flex:0 0 auto;font-size:11px;font-weight:700;padding:5px 9px;border-radius:7px;
   border:1px solid var(--line);color:var(--muted);letter-spacing:.01em;text-transform:none}
@@ -187,11 +194,12 @@ nav{
   border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);
 }
 nav button{
-  flex:1;padding:8px 0 7px;display:flex;flex-direction:column;align-items:center;gap:3px;
-  font-size:10px;font-weight:600;color:var(--muted);position:relative;
+  flex:1;min-width:0;padding:8px 2px 7px;display:flex;flex-direction:column;align-items:center;gap:3px;
+  font-size:9.5px;font-weight:600;color:var(--muted);position:relative;
 }
+nav button span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 nav button.on{color:var(--accent)}
-nav svg{width:23px;height:23px}
+nav svg{width:22px;height:22px;flex:0 0 auto}
 .badge{
   position:absolute;top:3px;left:50%;margin-left:6px;background:var(--danger);color:#fff;
   font-size:10px;font-weight:700;min-width:17px;height:17px;border-radius:999px;
@@ -252,6 +260,7 @@ nav svg{width:23px;height:23px}
   <section class="view" id="v-order"></section>
   <section class="view" id="v-hist"></section>
   <section class="view" id="v-recipes"></section>
+  <section class="view" id="v-cook"></section>
   <section class="view" id="v-manage"></section>
 </main>
 
@@ -387,12 +396,13 @@ const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store
 const fromServerLine = l => ({ id: l.item_id, name: l.name, cat: l.category, store: l.store, qty: l.qty });
 const toServerRecipe = r => ({ title: r.title, instructions: r.instructions, minutes: r.minutes,
   cost: r.cost, healthy: !!r.healthy, health_notes: r.healthNotes, source_url: r.sourceUrl || "",
+  planned_day: r.plannedDay == null ? null : r.plannedDay,
   ingredients: r.ingredients.map(g => ({ text: g.text, item_id: g.itemId })) });
 // Key order here is the canonical one — every other place a recipe is built
 // must match it, or the poll's snapshot comparison sees a change every tick.
 const fromServerRecipe = r => ({ id: r.id, title: r.title, instructions: r.instructions,
   minutes: r.minutes, cost: r.cost, healthy: !!r.healthy, healthNotes: r.health_notes,
-  sourceUrl: r.source_url || "",
+  sourceUrl: r.source_url || "", plannedDay: r.planned_day == null ? null : r.planned_day,
   ingredients: r.ingredients.map(g => ({ text: g.text, itemId: g.item_id })) });
 
 const orderId = () => (crypto.randomUUID ? crypto.randomUUID() : uid()+uid()+uid());
@@ -648,9 +658,10 @@ const ICONS = {
   order:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></svg>',
   hist:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
   manage:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2 2 2 0 11-4 0 1.7 1.7 0 00-2.9-1.2l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003 15a2 2 0 010-4 1.7 1.7 0 001.2-2.9l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 4a2 2 0 014 0a1.7 1.7 0 002.9 1.2l.1-.1a2 2 0 112.8 2.8l-.1.1A1.7 1.7 0 0021 11a2 2 0 010 4z"/></svg>',
-  recipes:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h11a2.5 2.5 0 012.5 2.5v12.5H7.5A2.5 2.5 0 015 17V4.5z"/><path d="M8.5 9h7M8.5 12.5h7"/></svg>'
+  recipes:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h11a2.5 2.5 0 012.5 2.5v12.5H7.5A2.5 2.5 0 015 17V4.5z"/><path d="M8.5 9h7M8.5 12.5h7"/></svg>',
+  cook:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M6 9V7a6 6 0 0112 0v2"/><path d="M5.5 9l1 9.5a2 2 0 002 1.5h7a2 2 0 002-1.5L18.5 9"/></svg>'
 };
-const TABS = [["shop","Shop"],["order","Order"],["recipes","Recipes"],["hist","History"],["manage","Manage"]];
+const TABS = [["shop","Shop"],["order","Order"],["recipes","Recipes"],["cook","Cooking"],["hist","History"],["manage","Manage"]];
 let tab = "shop";
 let editingOrder = null; // id of the past order currently open for editing
 let histView = "orders"; // "orders" | "trends"
@@ -1090,6 +1101,7 @@ function renderRecipeDetail(id){
     <h2>Instructions</h2>
     <p style="white-space:pre-wrap;color:var(--text)">${esc(r.instructions) || "None recorded."}</p>
   </div>
+  <button class="btn ghost" data-rplan="${r.id}">${r.plannedDay == null ? "Cook this week" : "Remove from this week"}</button>
   <button class="btn ghost" data-redit="${r.id}">Edit recipe</button>
   <button class="btn warn" data-rdel="${r.id}">Delete recipe</button>`;
 }
@@ -1099,7 +1111,7 @@ function renderRecipeDetail(id){
 let draft = null;
 
 const blankDraft = () => ({ id: "r_"+uid()+uid(), title:"", instructions:"", minutes:null,
-  cost:2, healthy:false, healthNotes:"", sourceUrl:"", ingredients:[] });
+  cost:2, healthy:false, healthNotes:"", sourceUrl:"", plannedDay:null, ingredients:[] });
 
 function renderRecipeEdit(){
   const d = draft;
@@ -1245,7 +1257,7 @@ function recipeFromExtract(data){
   const r = { id: "r_"+uid()+uid(), title: (data.title || "").trim(),
     instructions: data.instructions || "", minutes: data.minutes ?? null,
     cost: data.cost || 2, healthy: !!data.healthy, healthNotes: data.health_notes || "",
-    sourceUrl: data.source_url || "",
+    sourceUrl: data.source_url || "", plannedDay: null,
     ingredients: (data.ingredients || []).map(g => ({ text: g.text, itemId: g.item_id || null,
       newName: g.item_name || null, newCat: g.category || null })) };
   const made = materializeIngredients(r.ingredients);
@@ -1334,6 +1346,101 @@ async function extractRecipe(body, label){
   }
 }
 
+/* ---------- cooking ----------
+   planned_day: null not planned, -1 planned with no day yet, 0-6 Mon-Sun. */
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+const UNSET = -1;
+let cooking = null;          // recipe id being cooked, or null
+let cookDone = new Set();    // ingredients ticked off mid-cook; deliberately not synced
+
+const planned = () => state.recipes.filter(r => r.plannedDay != null);
+
+function setPlannedDay(r, day){
+  r.plannedDay = day;
+  enqueue("PUT", "/api/recipes/" + encodeURIComponent(r.id), toServerRecipe(r));
+  save();
+}
+
+function renderCook(){
+  if (cooking) return renderCookMode(cooking);
+  $("#tools").innerHTML = "";
+  const list = planned();
+  if (!list.length){
+    $("#v-cook").innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9h16M6 9V7a6 6 0 0112 0v2"/><path d="M5.5 9l1 9.5a2 2 0 002 1.5h7a2 2 0 002-1.5L18.5 9"/></svg>
+      <div>Nothing planned yet.</div>
+      <div style="margin-top:6px">Add recipes here, or hit “Cook this week” on any recipe.</div></div>
+      <button class="btn" id="cookadd">Add recipes to the week</button>`;
+    return;
+  }
+  const row = r => `<div class="row">
+      <button class="tap" data-cookopen="${r.id}">
+        <span class="grow"><span class="name">${esc(r.title)}</span>
+          <span class="meta">${timeLabel(r.minutes)} · ${r.ingredients.length} ingredients</span></span>
+      </button>
+      <button class="store s1" data-cookday="${r.id}">${r.plannedDay === UNSET ? "Set day" : DAYS[r.plannedDay].slice(0,3)}</button>
+      <button class="del" data-cookrm="${r.id}">Remove</button>
+    </div>`;
+
+  let html = "";
+  for (let d = 0; d < 7; d++){
+    const on = list.filter(r => r.plannedDay === d);
+    if (!on.length) continue;
+    html += `<div class="cat">${DAYS[d]}</div><div class="list">${on.map(row).join("")}</div>`;
+  }
+  const loose = list.filter(r => r.plannedDay === UNSET);
+  if (loose.length) html += `<div class="cat">No day yet</div><div class="list">${loose.map(row).join("")}</div>`;
+
+  const allIngredients = new Set();
+  for (const r of list) for (const g of r.ingredients) if (g.itemId && byId(g.itemId) && !state.checked[g.itemId]) allIngredients.add(g.itemId);
+
+  $("#v-cook").innerHTML = html +
+    `<button class="btn" id="cookadd">Add recipes to the week</button>` +
+    (allIngredients.size ? `<button class="btn ghost" id="cookshop">Add all ${allIngredients.size} missing ingredients to the list</button>` : "") +
+    `<button class="btn warn" id="cookclear">Clear the week</button>`;
+}
+
+/* Cooking mode: bigger type, ingredients you can tick off as you go, and the
+   screen kept awake — the three things that actually matter at the stove. */
+function renderCookMode(id){
+  const r = recipeById(id);
+  if (!r){ cooking = null; return renderCook(); }
+  $("#tools").innerHTML = "";
+  const steps = r.instructions.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  $("#v-cook").innerHTML = `
+  <button class="backlink" id="cookback">‹ The week</button>
+  <div class="card">
+    <h2>${esc(r.title)}</h2>
+    <p>${timeLabel(r.minutes)}${r.plannedDay != null && r.plannedDay !== UNSET ? " · " + DAYS[r.plannedDay] : ""}${
+      r.healthNotes ? " · " + esc(r.healthNotes) : ""}</p>
+    ${safeUrl(r.sourceUrl) ? `<p style="margin-top:0"><a href="${esc(safeUrl(r.sourceUrl))}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);font-weight:600">View the original ›</a></p>` : ""}
+  </div>
+  <div class="card">
+    <h2>Ingredients</h2>
+    <p>Tap one as you add it.</p>
+    <div class="list">${r.ingredients.map((g,i) => `<div class="row ${cookDone.has(i)?"done":""}">
+      <button class="tap" data-cooktick="${i}">
+        <span class="box">${TICK}</span>
+        <span class="grow"><span class="cookline">${esc(g.text)}</span></span>
+      </button></div>`).join("") || `<div class="row"><span class="c">None recorded.</span></div>`}</div>
+  </div>
+  <div class="card">
+    <h2>Method</h2>
+    ${steps.length ? steps.map((t,i) => `<div class="step"><b>${i+1}</b><span>${esc(t.replace(/^\d+[.)]\s*/, ""))}</span></div>`).join("")
+      : `<p>None recorded.</p>`}
+  </div>
+  <button class="btn ghost" data-ropen="${r.id}" id="cookdetail">Open in Recipes</button>`;
+  keepAwake();
+}
+
+/* Screen lock while cooking; harmless where unsupported. */
+let wakeLock = null;
+async function keepAwake(){
+  try { if ("wakeLock" in navigator && !wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch {}
+}
+function releaseAwake(){ try { if (wakeLock){ wakeLock.release(); wakeLock = null; } } catch {} }
+document.addEventListener("visibilitychange", () => { if (!document.hidden && cooking) keepAwake(); });
+
 /* ---------- manage view ---------- */
 function renderManage(){
   $("#tools").innerHTML = "";
@@ -1386,10 +1493,11 @@ function renderManage(){
 function render(){
   document.querySelectorAll(".view").forEach(v=>v.classList.remove("on"));
   $("#v-"+tab).classList.add("on");
-  $("#title").textContent = {shop:"Shop",order:"This Week's Order",recipes:"Recipes",hist:"History",manage:"Manage"}[tab];
+  $("#title").textContent = {shop:"Shop",order:"This Week's Order",recipes:"Recipes",
+    cook:"Cooking",hist:"History",manage:"Manage"}[tab];
   ({shop:renderShop, order:renderOrder,
     recipes: () => draft ? renderRecipeEdit() : renderRecipes(),
-    hist:renderHist, manage:renderManage})[tab]();
+    cook: renderCook, hist:renderHist, manage:renderManage})[tab]();
   renderTabs();
 }
 
@@ -1453,6 +1561,58 @@ document.addEventListener("click", e => {
     return;
   }
 
+  /* ---- cooking ---- */
+  if (t.closest("#cookback")){ cooking = null; cookDone = new Set(); releaseAwake(); renderCook(); window.scrollTo(0,0); return; }
+  if (t.closest("#cookadd")){
+    const pool = state.recipes.filter(r => r.plannedDay == null).sort((a,b)=>a.title.localeCompare(b.title));
+    if (!pool.length) return toast("Every recipe is already in the week");
+    sheet("Add to the week", pool.map(r => r.title), -1, pick => {
+      setPlannedDay(pool[pick], UNSET); render();
+      toast(`${pool[pick].title} added — set a day for it`);
+    });
+    return;
+  }
+  if (t.closest("#cookclear")){
+    if (!confirm("Clear the week?\n\nThis only empties the plan — your recipes and grocery list are untouched.")) return;
+    for (const r of planned()) setPlannedDay(r, null);
+    render(); toast("Week cleared");
+    return;
+  }
+  if (t.closest("#cookshop")){
+    let n = 0;
+    for (const r of planned())
+      for (const g of r.ingredients){
+        if (!g.itemId || !byId(g.itemId) || state.checked[g.itemId]) continue;
+        state.checked[g.itemId] = { qty:1, store:null };
+        enqueue("PUT", "/api/checked/" + encodeURIComponent(g.itemId), toServerChecked(state.checked[g.itemId]));
+        n++;
+      }
+    save(); render();
+    toast(n ? `Added ${n} item${n===1?"":"s"} to the list` : "Everything's already on the list");
+    return;
+  }
+  const co = t.closest("[data-cookopen]");
+  if (co){ cooking = co.dataset.cookopen; cookDone = new Set(); renderCook(); window.scrollTo(0,0); return; }
+
+  const cd = t.closest("[data-cookday]");
+  if (cd){
+    const r = recipeById(cd.dataset.cookday);
+    sheet("Which day · " + r.title, DAYS, r.plannedDay >= 0 ? r.plannedDay : -1, pick => {
+      setPlannedDay(r, pick); render();
+    });
+    return;
+  }
+  const crm = t.closest("[data-cookrm]");
+  if (crm){ setPlannedDay(recipeById(crm.dataset.cookrm), null); render(); return; }
+
+  const ct = t.closest("[data-cooktick]");
+  if (ct){
+    const i = +ct.dataset.cooktick;
+    if (cookDone.has(i)) cookDone.delete(i); else cookDone.add(i);
+    renderCook();
+    return;
+  }
+
   /* ---- recipes ---- */
   if (t.closest("#rnew")){ draft = blankDraft(); renderRecipeEdit(); window.scrollTo(0,0); return; }
   if (t.closest("#rback")){ openRecipe = null; pickSel = null; renderRecipes(); window.scrollTo(0,0); return; }
@@ -1476,7 +1636,13 @@ document.addEventListener("click", e => {
   }
 
   const ro = t.closest("[data-ropen]");
-  if (ro){ openRecipe = ro.dataset.ropen; pickSel = null; renderRecipes(); window.scrollTo(0,0); return; }
+  if (ro){
+    openRecipe = ro.dataset.ropen; pickSel = null;
+    if (tab !== "recipes"){ cooking = null; releaseAwake(); tab = "recipes"; render(); }
+    else renderRecipes();
+    window.scrollTo(0,0);
+    return;
+  }
 
   if (t.closest("#rpickstart")){
     const r = recipeById(openRecipe);
@@ -1494,6 +1660,16 @@ document.addEventListener("click", e => {
     const i = +rp.dataset.rpick;
     if (pickSel.has(i)) pickSel.delete(i); else pickSel.add(i);
     renderRecipes();
+    return;
+  }
+
+  const rpl = t.closest("[data-rplan]");
+  if (rpl){
+    const r = recipeById(rpl.dataset.rplan);
+    const adding = r.plannedDay == null;
+    setPlannedDay(r, adding ? UNSET : null);
+    renderRecipes();
+    toast(adding ? "Added to the week — set a day on Cooking" : "Removed from the week");
     return;
   }
 

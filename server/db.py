@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS recipes (
   healthy INTEGER NOT NULL DEFAULT 0,
   health_notes TEXT NOT NULL DEFAULT '',
   source_url TEXT NOT NULL DEFAULT '',
+  -- Weekly meal plan: NULL not planned, 0-6 Monday-Sunday, -1 planned but
+  -- not yet given a day.
+  planned_day INTEGER,
   updated_at TEXT NOT NULL,
   deleted_at TEXT
 );
@@ -90,6 +93,7 @@ def init_db():
         _ensure_column(conn, "items", "staple", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "items", "oneoff", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "recipes", "source_url", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "recipes", "planned_day", "INTEGER")
         _ensure_column(conn, "categories", "interchangeable", "INTEGER NOT NULL DEFAULT 0")
 
 

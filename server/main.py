@@ -84,6 +84,7 @@ class RecipeIn(BaseModel):
     healthy: bool = False
     health_notes: str = ""
     source_url: str = ""
+    planned_day: Optional[int] = None
     ingredients: list[IngredientIn] = []
 
 
@@ -144,7 +145,7 @@ def _history(conn):
 
 def _recipes(conn):
     rows = conn.execute(
-        """SELECT id, title, instructions, minutes, cost, healthy, health_notes, source_url
+        """SELECT id, title, instructions, minutes, cost, healthy, health_notes, source_url, planned_day
            FROM recipes WHERE deleted_at IS NULL ORDER BY title"""
     ).fetchall()
     out = []
@@ -393,15 +394,16 @@ def upsert_recipe(recipe_id: str, body: RecipeIn):
         ts = now()
         conn.execute(
             """
-            INSERT INTO recipes (id, title, instructions, minutes, cost, healthy, health_notes, source_url, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            INSERT INTO recipes (id, title, instructions, minutes, cost, healthy, health_notes, source_url, planned_day, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
               title=excluded.title, instructions=excluded.instructions, minutes=excluded.minutes,
               cost=excluded.cost, healthy=excluded.healthy, health_notes=excluded.health_notes,
-              source_url=excluded.source_url, updated_at=excluded.updated_at, deleted_at=NULL
+              source_url=excluded.source_url, planned_day=excluded.planned_day,
+              updated_at=excluded.updated_at, deleted_at=NULL
             """,
             (recipe_id, body.title, body.instructions, body.minutes, body.cost,
-             int(body.healthy), body.health_notes, body.source_url, ts),
+             int(body.healthy), body.health_notes, body.source_url, body.planned_day, ts),
         )
         # Ingredients are replaced wholesale — the client always sends the full list.
         conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
