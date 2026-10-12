@@ -1,5 +1,6 @@
 import base64
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -503,7 +504,8 @@ def _extract_blocks(text: Optional[str], uploads):
 
 
 @app.post("/api/recipes/extract")
-async def extract_recipe(text: Optional[str] = Form(None), files: list[UploadFile] = File(default=[])):
+async def extract_recipe(text: Optional[str] = Form(None), url: Optional[str] = Form(None),
+                         files: list[UploadFile] = File(default=[])):
     # Input is validated before the key check so a bad file reports what's
     # actually wrong with it rather than a generic configuration message.
     uploads = []
@@ -521,8 +523,11 @@ async def extract_recipe(text: Optional[str] = Form(None), files: list[UploadFil
             raise HTTPException(status_code=413,
                                 detail=f"That's {mb:.0f}MB of files. The limit is 20MB per recipe — try fewer pages at a time.")
         uploads.append((raw, "image/jpeg" if media_type == "image/jpg" else media_type))
-    if not uploads and not (text or "").strip():
-        raise HTTPException(status_code=400, detail="Provide recipe text or a file.")
+    url = (url or "").strip()
+    if url and not re.match(r"^https?://", url, re.I):
+        raise HTTPException(status_code=400, detail="That doesn't look like a web link. It should start with https://")
+    if not uploads and not url and not (text or "").strip():
+        raise HTTPException(status_code=400, detail="Provide a link, a file, or recipe text.")
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=503,
@@ -536,18 +541,25 @@ async def extract_recipe(text: Optional[str] = Form(None), files: list[UploadFil
 
     import anthropic
     client = anthropic.Anthropic()
+    # Claude does the fetching, not this server: the page is retrieved on
+    # Anthropic's side, so a pasted link can never reach anything on this LAN.
+    tools = [{"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 3}] if url else []
     try:
         response = client.messages.parse(
             model="claude-opus-5",
             max_tokens=16000,
             output_config={"effort": "low"},  # extraction is mechanical; raise if results disappoint
             system=EXTRACT_SYSTEM,
+            tools=tools,
             messages=[
                 {"role": "user", "content": [{"type": "text",
                  "text": "Grocery inventory to link ingredients against:\n" +
                          "\n".join(f"{i['id']} = {i['name']} ({i['category']})" for i in inventory) +
                          "\n\nCategories available for new items:\n" + ", ".join(categories)}]},
-                {"role": "user", "content": _extract_blocks(text, uploads)},
+                {"role": "user", "content":
+                    f"Fetch {url} and extract the recipe from that page. Ignore surrounding "
+                    f"site navigation, comments and adverts." if url
+                    else _extract_blocks(text, uploads)},
             ],
             output_format=ExtractedRecipe,
         )
@@ -563,6 +575,9 @@ async def extract_recipe(text: Optional[str] = Form(None), files: list[UploadFil
         raise HTTPException(status_code=502, detail="Couldn't reach Claude. Check the server's connection.")
 
     recipe = response.parsed_output
+    # The link the user gave is the authoritative source, whatever the page says.
+    if url:
+        recipe.source_url = url
     # Never trust a returned id: a hallucinated one would silently attach an
     # ingredient to the wrong grocery item.
     valid = {i["id"] for i in inventory}

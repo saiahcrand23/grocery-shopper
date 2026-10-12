@@ -1119,11 +1119,13 @@ function renderRecipeEdit(){
   $("#tools").innerHTML = "";
   $("#v-recipes").innerHTML = `
   <div class="card">
-    <h2>Start from a file or paste</h2>
-    <p>Upload a PDF, a screenshot, or a photo of a cookbook page and it'll be read into the fields below.
-       If the recipe runs over several pages, select them all at once and they'll be read as one recipe.
-       Or paste the text — you can also just type everything yourself.</p>
-    <textarea class="field" id="rpaste" rows="4" placeholder="Paste recipe text here…"></textarea>
+    <h2>Start from a link, a file, or paste</h2>
+    <p>Any of these fills in the fields below. Photos of a recipe running over several
+       pages can be selected together and are read as one recipe. You can also just type
+       everything yourself.</p>
+    <input class="field" id="rlink" type="url" inputmode="url" placeholder="https://… a recipe page">
+    <button class="mini" id="rfromlink">Read from this link</button>
+    <textarea class="field" id="rpaste" rows="4" placeholder="…or paste recipe text here" style="margin-top:12px"></textarea>
     <button class="mini" id="rextract">Read this text</button>
     <button class="btn ghost" id="rpickfile">Choose files or take photos…</button>
     <input type="file" id="rfile" accept="application/pdf,image/*" multiple hidden>
@@ -1313,9 +1315,8 @@ async function extractRecipe(body, label){
     status.style.fontWeight = bad ? "600" : "400";
   };
   say(`Reading ${label}… this takes a few seconds.`);
-  const btn = $("#rextract"), pick = $("#rpickfile");
-  if (btn) btn.disabled = true;
-  if (pick) pick.disabled = true;
+  const busy = [$("#rextract"), $("#rpickfile"), $("#rfromlink")].filter(Boolean);
+  busy.forEach(b => b.disabled = true);
   try {
     const res = await fetch(API_BASE + "/api/recipes/extract", { method:"POST", body });
     const data = await res.json().catch(() => ({}));
@@ -1342,8 +1343,7 @@ async function extractRecipe(body, label){
     say(e.message + " Nothing was filled in — you can still type it all below.", true);
     toast("Couldn't read that — see the message above");
   } finally {
-    if (btn) btn.disabled = false;
-    if (pick) pick.disabled = false;
+    busy.forEach(b => b.disabled = false);
   }
 }
 
@@ -1622,6 +1622,13 @@ document.addEventListener("click", e => {
   if (t.closest("#rpickfile")){ $("#rfile").click(); return; }
   if (t.closest("#rimport")){ $("#rfiles").click(); return; }
   if (t.closest("#rimpdone")){ importing = null; renderRecipes(); window.scrollTo(0,0); return; }
+  if (t.closest("#rfromlink")){
+    const u = $("#rlink").value.trim();
+    if (!u) return toast("Paste a recipe link first");
+    const fd = new FormData(); fd.append("url", u);
+    extractRecipe(fd, "that page");
+    return;
+  }
   if (t.closest("#rextract")){
     const text = $("#rpaste").value.trim();
     if (!text) return toast("Paste some recipe text first");
