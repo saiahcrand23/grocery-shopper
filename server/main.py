@@ -126,12 +126,21 @@ ORDER_CSS = """
 body{margin:0;padding:30px;color:#111;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 h1{font-size:23px;margin:0 0 2px}
 .date{color:#555;font-size:13px;margin-bottom:20px}
-.store{page-break-inside:avoid;margin-bottom:20px}
+/* No avoid-break on the store block: with recipe amounts a single store can
+   run past a full page, and avoiding the break just pushed it wholesale to the
+   next sheet and left page one blank. Keep individual items intact instead. */
+.store{margin-bottom:20px}
+h2{break-after:avoid}
+h3{break-after:avoid}
+li{break-inside:avoid}
 h2{font-size:17px;border-bottom:1px solid #000;padding-bottom:3px;margin:0 0 8px}
 h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#444;margin:11px 0 4px}
 ul{list-style:none;margin:0;padding:0}
-li{display:flex;align-items:center;gap:9px;padding:3.5px 0;font-size:14px}
-.box{width:13px;height:13px;border:1.5px solid #000;border-radius:2px;flex:0 0 auto}
+li{display:flex;align-items:flex-start;gap:9px;padding:3.5px 0;font-size:14px}
+.who{display:block}
+.amt{display:block;font-size:11.5px;color:#333;margin-top:1px}
+.amt i{font-style:normal;color:#777}
+.box{width:13px;height:13px;border:1.5px solid #000;border-radius:2px;flex:0 0 auto;margin-top:2px}
 .back{margin:28px 0 0;text-align:center}
 .back a{color:#777;font-size:13px;text-decoration:none}
 @page{size:A4;margin:14mm}
@@ -141,7 +150,7 @@ li{display:flex;align-items:center;gap:9px;padding:3.5px 0;font-size:14px}
 
 
 def _order_sheet(title: str, subtitle: str, rows):
-    """rows: (store name, category, item name, qty), grouped for printing."""
+    """rows: (store, category, item name, qty, [amount lines]), grouped for printing."""
     html = ""
     for store in STORES + sorted({r[0] for r in rows} - set(STORES)):
         here = [r for r in rows if r[0] == store]
@@ -153,9 +162,14 @@ def _order_sheet(title: str, subtitle: str, rows):
                 seen.add(r[1]); cats.append(r[1])
         body = ""
         for cat in cats:
-            lis = "".join(
-                f'<li><span class="box"></span>{escape(n)}{f" ×{q}" if q > 1 else ""}</li>'
-                for st, c, n, q in here if c == cat)
+            lis = ""
+            for st, c, n, q, amounts in here:
+                if c != cat:
+                    continue
+                extra = "".join(f'<span class="amt">{escape(t)} <i>{escape(src)}</i></span>'
+                                for t, src in amounts)
+                lis += (f'<li><span class="box"></span><span class="who">{escape(n)}'
+                        f'{f" ×{q}" if q > 1 else ""}{extra}</span></li>')
             body += f"<h3>{escape(cat)}</h3><ul>{lis}</ul>"
         html += f'<div class="store"><h2>{escape(store)}</h2>{body}</div>'
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
@@ -173,6 +187,14 @@ def print_order():
     with get_conn() as conn:
         items = {r["id"]: r for r in conn.execute(
             "SELECT id, name, category, default_store FROM items WHERE deleted_at IS NULL")}
+        # What this week's planned recipes ask for, in their own words.
+        wanted = {}
+        for r in _recipes(conn):
+            if r["planned_day"] is None:
+                continue
+            for g in r["ingredients"]:
+                if g["item_id"]:
+                    wanted.setdefault(g["item_id"], []).append((g["text"], r["title"]))
         rows = []
         for item_id, c in _checked(conn).items():
             it = items.get(item_id)
@@ -180,7 +202,7 @@ def print_order():
                 continue
             si = c["store_override"] if c["store_override"] is not None else it["default_store"]
             rows.append((STORES[si] if 0 <= si < len(STORES) else STORES[0],
-                         it["category"], it["name"], c["qty"]))
+                         it["category"], it["name"], c["qty"], wanted.get(item_id, [])))
     rows.sort(key=lambda r: (r[1].lower(), r[2].lower()))
     return _order_sheet("Shopping List", f"{date.today():%A, %B %-d, %Y}", rows)
 
@@ -208,7 +230,7 @@ def print_past_order(order_id: str):
         o = conn.execute("SELECT finalized_at FROM orders WHERE id=?", (order_id,)).fetchone()
         if o is None:
             raise HTTPException(status_code=404, detail="order not found")
-        rows = [(l["store"], l["category"], l["name"], l["qty"]) for l in conn.execute(
+        rows = [(l["store"], l["category"], l["name"], l["qty"], []) for l in conn.execute(
             "SELECT name, category, store, qty FROM order_lines WHERE order_id=?", (order_id,))]
     rows.sort(key=lambda r: (r[1].lower(), r[2].lower()))
     when = datetime.fromisoformat(o["finalized_at"].replace("Z", "+00:00"))
