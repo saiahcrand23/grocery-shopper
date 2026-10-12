@@ -1,13 +1,14 @@
 import base64
 import os
 import re
+from html import escape
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from db import get_conn, init_db
@@ -37,6 +38,83 @@ SHELL_HEADERS = {"cache-control": "no-cache"}
 @app.get("/")
 def serve_index():
     return FileResponse(ROOT / "index.html", headers=SHELL_HEADERS)
+
+
+MEAL_PLAN_CSS = """
+*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{margin:0;background:#fff;color:#4a2f28;padding:34px;
+  font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+h1{font-family:Georgia,"Times New Roman",serif;font-weight:400;font-size:40px;
+  text-align:center;color:#5a3a32;margin:0 0 26px}
+.body{display:flex;gap:22px;align-items:flex-start}
+.side{flex:0 0 33%}
+.wk{display:flex;align-items:center;gap:8px;margin-bottom:16px}
+.wk span{background:#f6b8bc;border-radius:999px;padding:5px 9px;font-size:9px;letter-spacing:.08em}
+.wk b{flex:1;background:#fbd3d6;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:400}
+.side h2{font-size:12px;letter-spacing:.12em;margin:0 0 10px;color:#5a3a32}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;align-items:center;gap:7px;padding:0 0 7px}
+.box{width:19px;height:13px;border-radius:999px;background:#f6b8bc;flex:0 0 auto}
+.line{flex:1;background:#fbd3d6;border-radius:999px;padding:3px 9px;font-size:10.5px;min-height:13px}
+.days{flex:1}
+.day{display:flex;gap:5px;margin-bottom:9px;page-break-inside:avoid}
+.dayname{flex:0 0 34px;border-radius:9px;background:#f3e8dc;display:flex;align-items:center;
+  justify-content:center;writing-mode:vertical-rl;transform:rotate(180deg);
+  font-size:10px;letter-spacing:.14em}
+.slots{flex:1;border-radius:9px;background:#f3e8dc;padding:11px 13px;display:grid;
+  grid-template-columns:1fr 1fr;gap:9px 14px;min-height:62px}
+.day.alt .dayname,.day.alt .slots{background:#fbd3d6}
+.slot span{display:block;font-size:8px;letter-spacing:.11em;color:#8a6a60}
+.slot p{margin:2px 0 0;font-size:11px;line-height:1.3;min-height:13px}
+@page{size:A4;margin:12mm}
+@media screen{body{max-width:820px;margin:0 auto}}
+"""
+
+DAYS_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAYS_ABBR = ["MON", "TUES", "WED", "THURS", "FRI", "SAT", "SUN"]
+
+
+@app.get("/print/meal-plan", response_class=HTMLResponse)
+def print_meal_plan():
+    """Rendered here rather than in the app because window.print() does nothing
+    in an iOS home-screen web app. Opening this in Safari gives a real print
+    dialog, and it works from a desktop browser too."""
+    from datetime import date, timedelta
+    with get_conn() as conn:
+        recipes = [r for r in _recipes(conn) if r["planned_day"] is not None]
+        checked = _checked(conn)
+        names = {r["id"]: r["name"] for r in conn.execute(
+            "SELECT id, name FROM items WHERE deleted_at IS NULL")}
+
+    monday = date.today() - timedelta(days=date.today().weekday())
+    span = f"{monday:%b %-d} – {monday + timedelta(days=6):%b %-d}"
+
+    days = ""
+    for d in range(7):
+        dinner = "<br>".join(escape(r["title"]) for r in recipes if r["planned_day"] == d)
+        slots = "".join(f'<div class="slot"><span>{lbl}</span><p>{val}</p></div>'
+                        for lbl, val in (("BREAKFAST", ""), ("DINNER", dinner), ("LUNCH", ""), ("SNACK", "")))
+        days += (f'<div class="day{" alt" if d % 2 else ""}">'
+                 f'<div class="dayname">{DAYS_ABBR[d]}</div><div class="slots">{slots}</div></div>')
+
+    lines = [escape(names[i]) + (f" ×{c['qty']}" if c["qty"] > 1 else "")
+             for i, c in checked.items() if i in names]
+    lines += [""] * max(0, 20 - len(lines))
+    items = "".join(f'<li><span class="box"></span><span class="line">{t}</span></li>' for t in lines)
+
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Weekly Meal Plan</title><style>{MEAL_PLAN_CSS}</style></head><body>
+<h1>Weekly Meal Plan</h1>
+<div class="body">
+  <aside class="side">
+    <div class="wk"><span>WK</span><b>{span}</b></div>
+    <h2>GROCERY LIST :</h2><ul>{items}</ul>
+  </aside>
+  <div class="days">{days}</div>
+</div>
+<script>window.addEventListener("load", () => setTimeout(() => window.print(), 300));</script>
+</body></html>""", headers=SHELL_HEADERS)
 
 
 @app.get("/sw.js")
