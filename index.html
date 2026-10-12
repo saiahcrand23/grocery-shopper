@@ -1107,11 +1107,13 @@ function renderRecipeEdit(){
   $("#v-recipes").innerHTML = `
   <div class="card">
     <h2>Start from a file or paste</h2>
-    <p>Upload a PDF, a screenshot, or a photo of a cookbook page and it'll be read into the fields below. Or paste the text. You can also just type everything yourself.</p>
+    <p>Upload a PDF, a screenshot, or a photo of a cookbook page and it'll be read into the fields below.
+       If the recipe runs over several pages, select them all at once and they'll be read as one recipe.
+       Or paste the text — you can also just type everything yourself.</p>
     <textarea class="field" id="rpaste" rows="4" placeholder="Paste recipe text here…"></textarea>
     <button class="mini" id="rextract">Read this text</button>
-    <button class="btn ghost" id="rpickfile">Choose a file or take a photo…</button>
-    <input type="file" id="rfile" accept="application/pdf,image/*" hidden>
+    <button class="btn ghost" id="rpickfile">Choose files or take photos…</button>
+    <input type="file" id="rfile" accept="application/pdf,image/*" multiple hidden>
     <div id="rstatus" class="meta" style="margin-top:8px"></div>
   </div>
 
@@ -1231,7 +1233,8 @@ function saveDraft(){
 let importing = null;   // {done, total, results} while a batch is running
 
 async function extractOne(file){
-  const fd = new FormData(); fd.append("file", file, file.name);
+  // One request per file here: in a batch each file is its own recipe.
+  const fd = new FormData(); fd.append("files", file, file.name);
   const res = await fetch(API_BASE + "/api/recipes/extract", { method:"POST", body: fd });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `Couldn't read it (${res.status})`);
@@ -1805,11 +1808,12 @@ document.addEventListener("change", e => {
     return;
   }
   if (e.target.id === "rfile"){
-    const f = e.target.files[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = "";
-    if (!f) return;
-    const fd = new FormData(); fd.append("file", f, f.name);
-    extractRecipe(fd, f.name);
+    if (!files.length) return;
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f, f.name);
+    extractRecipe(fd, files.length === 1 ? files[0].name : `${files.length} pages`);
     return;
   }
   if (e.target.dataset && e.target.dataset.hdate !== undefined){

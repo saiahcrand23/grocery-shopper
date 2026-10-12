@@ -476,38 +476,50 @@ Rules:
   When `item_id` is set, leave `item_name` and `category` null."""
 
 
-def _extract_blocks(text: Optional[str], upload_bytes: Optional[bytes], media_type: Optional[str]):
-    if upload_bytes is None:
-        return [{"type": "text", "text": f"Extract the recipe from this text:\n\n{text}"}]
-    data = base64.standard_b64encode(upload_bytes).decode("utf-8")
+def _file_block(raw: bytes, media_type: str):
+    data = base64.standard_b64encode(raw).decode("utf-8")
     if media_type == "application/pdf":
-        block = {"type": "document",
-                 "source": {"type": "base64", "media_type": "application/pdf", "data": data}}
-    else:
-        block = {"type": "image",
-                 "source": {"type": "base64", "media_type": media_type, "data": data}}
-    # Document/image first, instruction after — the documented ordering.
-    return [block, {"type": "text", "text": "Extract the recipe from this file."}]
+        return {"type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": data}}
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+
+
+def _extract_blocks(text: Optional[str], uploads):
+    """uploads is a list of (bytes, media_type). More than one means the pages
+    of a single recipe, not several recipes — the caller decides that by how it
+    batches its requests."""
+    if not uploads:
+        return [{"type": "text", "text": f"Extract the recipe from this text:\n\n{text}"}]
+    blocks = [_file_block(raw, mt) for raw, mt in uploads]
+    # Documents/images first, instruction after — the documented ordering.
+    blocks.append({"type": "text", "text":
+        "Extract the recipe from this file." if len(uploads) == 1 else
+        f"These {len(uploads)} files are consecutive pages of ONE recipe, in order. "
+        "Combine them into a single recipe — ingredients may be on one page and the "
+        "method on another, and a list may continue across a page break."})
+    return blocks
 
 
 @app.post("/api/recipes/extract")
-async def extract_recipe(text: Optional[str] = Form(None), file: Optional[UploadFile] = File(None)):
+async def extract_recipe(text: Optional[str] = Form(None), files: list[UploadFile] = File(default=[])):
     # Input is validated before the key check so a bad file reports what's
     # actually wrong with it rather than a generic configuration message.
-    upload_bytes = media_type = None
-    if file is not None:
-        media_type = (file.content_type or "").lower()
+    uploads = []
+    total = 0
+    for f in files:
+        media_type = (f.content_type or "").lower()
         if media_type not in IMAGE_TYPES and media_type != "application/pdf":
             raise HTTPException(status_code=415,
-                                detail=f"Can't read {media_type or 'that file type'}. Upload a PDF or an image.")
-        upload_bytes = await file.read()
-        if len(upload_bytes) > MAX_UPLOAD_BYTES:
-            mb = len(upload_bytes) / 1024 / 1024
+                                detail=f"Can't read {media_type or 'that file type'}. Upload PDFs or images.")
+        raw = await f.read()
+        total += len(raw)
+        # The cap is on the whole request, since every page rides in one call.
+        if total > MAX_UPLOAD_BYTES:
+            mb = total / 1024 / 1024
             raise HTTPException(status_code=413,
-                                detail=f"That file is {mb:.0f}MB. The limit is 20MB — try a smaller export or a photo of the page.")
-        if media_type == "image/jpg":
-            media_type = "image/jpeg"
-    elif not (text or "").strip():
+                                detail=f"That's {mb:.0f}MB of files. The limit is 20MB per recipe — try fewer pages at a time.")
+        uploads.append((raw, "image/jpeg" if media_type == "image/jpg" else media_type))
+    if not uploads and not (text or "").strip():
         raise HTTPException(status_code=400, detail="Provide recipe text or a file.")
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -533,7 +545,7 @@ async def extract_recipe(text: Optional[str] = Form(None), file: Optional[Upload
                  "text": "Grocery inventory to link ingredients against:\n" +
                          "\n".join(f"{i['id']} = {i['name']} ({i['category']})" for i in inventory) +
                          "\n\nCategories available for new items:\n" + ", ".join(categories)}]},
-                {"role": "user", "content": _extract_blocks(text, upload_bytes, media_type)},
+                {"role": "user", "content": _extract_blocks(text, uploads)},
             ],
             output_format=ExtractedRecipe,
         )
