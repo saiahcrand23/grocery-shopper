@@ -88,21 +88,19 @@ def _chrome():
     return None
 
 
-@app.get("/print/meal-plan.pdf")
-def meal_plan_pdf():
+def _pdf_of(path: str, filename: str):
     """A PDF, because iOS can hand that to the share sheet — which is the only
-    place an installed web app can reach a Print option. Rendered from the HTML
-    route above so there's one layout, not two."""
+    place an installed web app can reach a Print option. Always rendered from
+    one of the HTML routes, so there's never a second layout to keep in step."""
     chrome = _chrome()
     if not chrome:
         raise HTTPException(status_code=503, detail="No browser on the server to build the PDF with.")
     with tempfile.TemporaryDirectory() as tmp:
-        out = os.path.join(tmp, "plan.pdf")
+        out = os.path.join(tmp, "out.pdf")
         try:
             subprocess.run([chrome, "--headless", "--disable-gpu", "--no-sandbox",
                             "--no-pdf-header-footer", f"--print-to-pdf={out}",
-                            f"--user-data-dir={tmp}/profile",
-                            PRINT_ORIGIN + "/print/meal-plan"],
+                            f"--user-data-dir={tmp}/profile", PRINT_ORIGIN + path],
                            capture_output=True, timeout=60, check=True)
         except subprocess.TimeoutExpired:
             raise HTTPException(status_code=504, detail="Building the PDF took too long.")
@@ -111,8 +109,111 @@ def meal_plan_pdf():
         if not os.path.exists(out):
             raise HTTPException(status_code=500, detail="Couldn't build the PDF.")
         return Response(open(out, "rb").read(), media_type="application/pdf",
-                        headers={"content-disposition": 'inline; filename="meal-plan.pdf"',
+                        headers={"content-disposition": f'inline; filename="{filename}"',
                                  "cache-control": "no-store"})
+
+
+@app.get("/print/meal-plan.pdf")
+def meal_plan_pdf():
+    return _pdf_of("/print/meal-plan", "meal-plan.pdf")
+
+
+# Store names live on the client as a constant; printing needs them here too.
+STORES = ["Wal-Mart", "Sam's Club", "Produce Store"]
+
+ORDER_CSS = """
+*{box-sizing:border-box}
+body{margin:0;padding:30px;color:#111;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+h1{font-size:23px;margin:0 0 2px}
+.date{color:#555;font-size:13px;margin-bottom:20px}
+.store{page-break-inside:avoid;margin-bottom:20px}
+h2{font-size:17px;border-bottom:1px solid #000;padding-bottom:3px;margin:0 0 8px}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#444;margin:11px 0 4px}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;align-items:center;gap:9px;padding:3.5px 0;font-size:14px}
+.box{width:13px;height:13px;border:1.5px solid #000;border-radius:2px;flex:0 0 auto}
+.back{margin:28px 0 0;text-align:center}
+.back a{color:#777;font-size:13px;text-decoration:none}
+@page{size:A4;margin:14mm}
+@media print{.back{display:none}}
+@media screen{body{max-width:760px;margin:0 auto}}
+"""
+
+
+def _order_sheet(title: str, subtitle: str, rows):
+    """rows: (store name, category, item name, qty), grouped for printing."""
+    html = ""
+    for store in STORES + sorted({r[0] for r in rows} - set(STORES)):
+        here = [r for r in rows if r[0] == store]
+        if not here:
+            continue
+        cats, seen = [], set()
+        for r in here:
+            if r[1] not in seen:
+                seen.add(r[1]); cats.append(r[1])
+        body = ""
+        for cat in cats:
+            lis = "".join(
+                f'<li><span class="box"></span>{escape(n)}{f" ×{q}" if q > 1 else ""}</li>'
+                for st, c, n, q in here if c == cat)
+            body += f"<h3>{escape(cat)}</h3><ul>{lis}</ul>"
+        html += f'<div class="store"><h2>{escape(store)}</h2>{body}</div>'
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(title)}</title><style>{ORDER_CSS}</style></head><body>
+<h1>{escape(title)}</h1><div class="date">{escape(subtitle)}</div>
+{html or "<p>Nothing on the list.</p>"}
+<p class="back"><a href="/">&lsaquo; Back to the app</a></p>
+</body></html>""", headers=SHELL_HEADERS)
+
+
+@app.get("/print/order", response_class=HTMLResponse)
+def print_order():
+    from datetime import date
+    with get_conn() as conn:
+        items = {r["id"]: r for r in conn.execute(
+            "SELECT id, name, category, default_store FROM items WHERE deleted_at IS NULL")}
+        rows = []
+        for item_id, c in _checked(conn).items():
+            it = items.get(item_id)
+            if not it:
+                continue
+            si = c["store_override"] if c["store_override"] is not None else it["default_store"]
+            rows.append((STORES[si] if 0 <= si < len(STORES) else STORES[0],
+                         it["category"], it["name"], c["qty"]))
+    rows.sort(key=lambda r: (r[1].lower(), r[2].lower()))
+    return _order_sheet("Shopping List", f"{date.today():%A, %B %-d, %Y}", rows)
+
+
+@app.get("/print/order.pdf")
+def order_pdf():
+    return _pdf_of("/print/order", "shopping-list.pdf")
+
+
+# Registered before the HTML route below: {order_id} matches any non-slash
+# run, so the HTML route would otherwise capture "<id>.pdf" whole and 404.
+@app.get("/print/order/{order_id}.pdf")
+def past_order_pdf(order_id: str):
+    # Check first: Chrome will cheerfully render a 404 page into a valid PDF,
+    # so without this a bad id comes back as 200 and a sheet saying "not found".
+    with get_conn() as conn:
+        if conn.execute("SELECT 1 FROM orders WHERE id=?", (order_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="order not found")
+    return _pdf_of(f"/print/order/{order_id}", "shopping-list.pdf")
+
+
+@app.get("/print/order/{order_id}", response_class=HTMLResponse)
+def print_past_order(order_id: str):
+    with get_conn() as conn:
+        o = conn.execute("SELECT finalized_at FROM orders WHERE id=?", (order_id,)).fetchone()
+        if o is None:
+            raise HTTPException(status_code=404, detail="order not found")
+        rows = [(l["store"], l["category"], l["name"], l["qty"]) for l in conn.execute(
+            "SELECT name, category, store, qty FROM order_lines WHERE order_id=?", (order_id,))]
+    rows.sort(key=lambda r: (r[1].lower(), r[2].lower()))
+    when = datetime.fromisoformat(o["finalized_at"].replace("Z", "+00:00"))
+    return _order_sheet("Shopping List", f"{when:%A, %B %-d, %Y}", rows)
+
 
 DAYS_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 DAYS_ABBR = ["MON", "TUES", "WED", "THURS", "FRI", "SAT", "SUN"]
