@@ -463,7 +463,7 @@ async function pollTick(){
   if (state.forcePush) return tryForcePush();
   if (!state.migratedToServer) return tryMigrate();
   if (queue.length) return flushQueue(); // retry writes that failed while offline; skip the GET merge until they land
-  if (isEditing()) return;
+  if (isEditing() || importing) return;
   let remote;
   try { remote = await apiCall("GET", "/api/state"); } catch { return; }
   if (adoptServerSnapshot(remote)) render();
@@ -956,6 +956,7 @@ function visibleRecipes(){
 
 function renderRecipes(){
   if (openRecipe){ $("#tools").innerHTML = ""; return renderRecipeDetail(openRecipe); }
+  if (importing) return renderImport();
   $("#tools").innerHTML =
     `<input class="search" id="rq" type="search" placeholder="Search recipes" value="${esc(rQuery)}">
      <div class="chips">
@@ -967,7 +968,9 @@ function renderRecipes(){
      </div>`;
 
   const list = visibleRecipes();
-  const header = `<button class="btn" id="rnew">Add a recipe</button>`;
+  const header = `<button class="btn" id="rnew">Add a recipe</button>
+    <button class="btn ghost" id="rimport">Import photos or PDFs…</button>
+    <input type="file" id="rfiles" accept="application/pdf,image/*" multiple hidden>`;
   if (!state.recipes.length){
     $("#v-recipes").innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 4.5h11a2.5 2.5 0 012.5 2.5v12.5H7.5A2.5 2.5 0 015 17V4.5z"/><path d="M8.5 9h7M8.5 12.5h7"/></svg>
@@ -985,6 +988,47 @@ function renderRecipes(){
       <span class="store s${r.healthy?2:0}">${r.ingredients.length}</span>
     </div>`).join("")}</div>`
     : `<div class="empty">No recipes match those filters.</div>`) + header;
+}
+
+function renderImport(){
+  const { done, total, results } = importing;
+  const running = done < total;
+  const ok = results.filter(r => !r.error);
+  const failed = results.filter(r => r.error);
+  const flagged = ok.filter(r => r.flags.length);
+  const made = ok.reduce((a,r) => a + r.made, 0);
+
+  $("#tools").innerHTML = "";
+  $("#v-recipes").innerHTML = `
+  <div class="card">
+    <h2>${running ? `Reading ${done + 1} of ${total}…` : `Imported ${ok.length} of ${total}`}</h2>
+    ${running
+      ? `<p>Each one takes a few seconds. You can leave this tab — it'll keep going.</p>`
+      : `<p>${made ? made + " new grocery item" + (made===1?"":"s") + " added. " : ""}${
+           flagged.length ? flagged.length + " worth a check below." : "Nothing looked off."}</p>
+         <button class="mini" id="rimpdone">Done</button>`}
+  </div>
+  ${failed.length ? `<div class="card">
+    <h2>Couldn't read ${failed.length}</h2>
+    <div class="list">${failed.map(r => `<div class="row"><span class="grow">
+      <span class="name">${esc(r.name)}</span><span class="meta">${esc(r.error)}</span></span></div>`).join("")}</div>
+  </div>` : ""}
+  ${flagged.length ? `<div class="card">
+    <h2>Worth a look</h2>
+    <p>These saved, but came back thin — tap to open and fix.</p>
+    <div class="list">${flagged.map(r => `<div class="row">
+      <button class="tap" data-ropen="${r.recipe.id}"><span class="grow">
+        <span class="name">${esc(r.recipe.title)}</span>
+        <span class="meta">${esc(r.flags.join(" · "))}</span></span></button></div>`).join("")}</div>
+  </div>` : ""}
+  ${ok.length ? `<div class="card">
+    <h2>Added</h2>
+    <div class="list">${ok.map(r => `<div class="row">
+      <button class="tap" data-ropen="${r.recipe.id}"><span class="grow">
+        <span class="name">${esc(r.recipe.title)}</span>
+        <span class="meta">${r.recipe.ingredients.length} ingredient${r.recipe.ingredients.length===1?"":"s"}${
+          r.made ? " · " + r.made + " new item" + (r.made===1?"":"s") : ""}</span></span></button></div>`).join("")}</div>
+  </div>` : ""}`;
 }
 
 function renderRecipeDetail(id){
@@ -1130,9 +1174,9 @@ function pickItemFor(idx){
    silently drops it on the day you actually need it. So anything still
    unlinked at save time becomes a real grocery item — non-staple, so the Shop
    tab's Regulars filter keeps it out of the way, and Wal-Mart by default. */
-function materializeIngredients(){
+function materializeIngredients(ingredients){
   let made = 0;
-  for (const g of draft.ingredients){
+  for (const g of ingredients){
     if (g.itemId && byId(g.itemId)) continue;
     const name = (g.newName || "").trim();
     if (!name){ g.itemId = null; continue; }
@@ -1155,7 +1199,7 @@ function saveDraft(){
   if (!draft.title.trim()) return toast("Give the recipe a title first");
   draft.title = draft.title.trim();
   draft.ingredients = draft.ingredients.filter(g => g.text.trim());
-  const made = materializeIngredients();
+  const made = materializeIngredients(draft.ingredients);
   // Strip the transient suggestion fields so the stored shape matches exactly
   // what the server round-trips back — otherwise every poll reads as a change.
   draft.ingredients = draft.ingredients.map(g => ({ text: g.text, itemId: g.itemId || null }));
@@ -1167,6 +1211,69 @@ function saveDraft(){
   draft = null; openRecipe = id;
   save(); render(); window.scrollTo(0,0);
   toast(made ? `Recipe saved · ${made} new item${made===1?"":"s"} added` : "Recipe saved");
+}
+
+/* ---------- bulk import ----------
+   Files are sent one at a time rather than in one giant request: a dozen phone
+   photos would blow past the upload limit, and per-file requests give real
+   progress and let one bad photo fail without taking the batch with it. */
+let importing = null;   // {done, total, results} while a batch is running
+
+async function extractOne(file){
+  const fd = new FormData(); fd.append("file", file, file.name);
+  const res = await fetch(API_BASE + "/api/recipes/extract", { method:"POST", body: fd });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `Couldn't read it (${res.status})`);
+  return data;
+}
+
+function recipeFromExtract(data){
+  const r = { id: "r_"+uid()+uid(), title: (data.title || "").trim(),
+    instructions: data.instructions || "", minutes: data.minutes ?? null,
+    cost: data.cost || 2, healthy: !!data.healthy, healthNotes: data.health_notes || "",
+    ingredients: (data.ingredients || []).map(g => ({ text: g.text, itemId: g.item_id || null,
+      newName: g.item_name || null, newCat: g.category || null })) };
+  const made = materializeIngredients(r.ingredients);
+  r.ingredients = r.ingredients.map(g => ({ text: g.text, itemId: g.itemId || null }));
+  return { recipe: r, made };
+}
+
+// Worth a second look rather than silently trusting: these are the shapes a
+// failed read produces even when the API call itself succeeded.
+function thinReasons(r){
+  const out = [];
+  if (!r.title) out.push("no title");
+  if (!r.ingredients.length) out.push("no ingredients");
+  else if (!r.ingredients.some(g => g.itemId)) out.push("nothing linked to groceries");
+  if (!r.instructions.trim()) out.push("no instructions");
+  return out;
+}
+
+async function importFiles(files){
+  importing = { done: 0, total: files.length, results: [] };
+  renderRecipes();
+  // A few at a time: fast enough for a stack, gentle enough not to trip rate limits.
+  const queueIn = files.slice();
+  async function worker(){
+    while (queueIn.length){
+      const f = queueIn.shift();
+      try {
+        const { recipe, made } = recipeFromExtract(await extractOne(f));
+        if (!recipe.title) recipe.title = f.name.replace(/\.[^.]+$/, "");
+        state.recipes.push(recipe);
+        enqueue("PUT", "/api/recipes/" + encodeURIComponent(recipe.id), toServerRecipe(recipe));
+        importing.results.push({ name: f.name, recipe, made, flags: thinReasons(recipe) });
+      } catch (e) {
+        importing.results.push({ name: f.name, error: e.message });
+      }
+      importing.done++;
+      save();
+      renderRecipes();
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  state.recipes.sort((a,b) => a.title.localeCompare(b.title));
+  save(); renderRecipes();
 }
 
 async function extractRecipe(body, label){
@@ -1336,6 +1443,8 @@ document.addEventListener("click", e => {
   if (t.closest("#rcancel")){ draft = null; renderRecipes(); window.scrollTo(0,0); return; }
   if (t.closest("#rsave")){ saveDraft(); return; }
   if (t.closest("#rpickfile")){ $("#rfile").click(); return; }
+  if (t.closest("#rimport")){ $("#rfiles").click(); return; }
+  if (t.closest("#rimpdone")){ importing = null; renderRecipes(); window.scrollTo(0,0); return; }
   if (t.closest("#rextract")){
     const text = $("#rpaste").value.trim();
     if (!text) return toast("Paste some recipe text first");
@@ -1675,6 +1784,12 @@ document.addEventListener("change", e => {
     const it = byId(e.target.dataset.rename);
     const v = e.target.value.trim();
     if (it && v){ it.name = v; enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it)); save(); } else if (it) e.target.value = it.name;
+  }
+  if (e.target.id === "rfiles"){
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length) importFiles(files);
+    return;
   }
   if (e.target.id === "rfile"){
     const f = e.target.files[0];
