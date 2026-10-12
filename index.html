@@ -496,6 +496,9 @@ const checkedIds = () => Object.keys(state.checked).filter(byId);
 // One-offs live only on the current list, so they never appear as browsable
 // inventory on Shop or in Manage.
 const inventory = () => state.items.filter(i => !i.oneoff);
+// Items come back in insertion order; alphabetical is what you can actually scan.
+// localeCompare so case and accents sort sensibly rather than by code point.
+const byName = (a,b) => a.name.localeCompare(b.name);
 
 /* ---------- purchase analysis ----------
    Everything here is derived from state.history, which already holds every
@@ -704,7 +707,7 @@ function renderShop(){
     `</div>`);
 
   const shown = cats.map(c => [c, stock.filter(i =>
-      i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
+      i.cat===c && (!q || i.name.toLowerCase().includes(q))).sort(byName)])
     .filter(([,arr]) => arr.length);
 
   // Suppressed while searching — a search is a specific intent, not a browse.
@@ -1478,7 +1481,7 @@ function renderManage(){
          <button class="catname" data-catrename="${esc(c)}">${esc(c)}</button>
          <button class="flag ${state.interchangeable.includes(c)?"on":""}" data-catany="${esc(c)}">Any item counts</button>
        </div>
-       <div class="list">${inventory().filter(i=>i.cat===c).map(i=>{
+       <div class="list">${inventory().filter(i=>i.cat===c).sort(byName).map(i=>{
          return `<div class="erow">
            <input class="editname" value="${esc(i.name)}" data-rename="${i.id}">
            <div class="ectl">
@@ -1962,7 +1965,7 @@ document.addEventListener("input", e => {
     // re-render list only, so the input keeps focus
     const stock = inventory();   // search looks past the regulars filter
     const cats = state.cats.filter(c => stock.some(i=>i.cat===c));
-    const shown = cats.map(c => [c, stock.filter(i => i.cat===c && (!q || i.name.toLowerCase().includes(q)))])
+    const shown = cats.map(c => [c, stock.filter(i => i.cat===c && (!q || i.name.toLowerCase().includes(q))).sort(byName)])
       .filter(([,a]) => a.length);
     shop.innerHTML = shown.length ? shown.map(([c,arr]) =>
       `<div class="cat" id="cat-${slug(c)}">${esc(c)}</div><div class="list">${arr.map(i => rowHTML(i)).join("")}</div>`).join("")
