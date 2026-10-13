@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS items (
   staple INTEGER NOT NULL DEFAULT 0,
   -- A one-off exists only while it's on the current list; it never shows up as
   -- browsable inventory and is removed once the order is finalized.
-  oneoff INTEGER NOT NULL DEFAULT 0
+  oneoff INTEGER NOT NULL DEFAULT 0,
+  -- Things you always have anyway. Recipes never put these on the list by
+  -- themselves; you can still add them by hand.
+  on_hand INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS checked (
@@ -92,6 +95,7 @@ def init_db():
         conn.executescript(SCHEMA)
         _ensure_column(conn, "items", "staple", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "items", "oneoff", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "items", "on_hand", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "recipes", "source_url", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "recipes", "planned_day", "INTEGER")
         _ensure_column(conn, "categories", "interchangeable", "INTEGER NOT NULL DEFAULT 0")

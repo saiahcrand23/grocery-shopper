@@ -293,7 +293,7 @@ function seed(){
   const items = [];
   for (const [cat, names] of Object.entries(SEED))
     for (const n of names)
-      items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0, staple:false, oneoff:false });
+      items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0, staple:false, oneoff:false, onHand:false });
   return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[], interchangeable:[], recipes:[] };
 }
 
@@ -312,7 +312,7 @@ function load(){
     // Items saved before staples existed lack the key. Append it (never insert
     // it mid-object) so the shape matches what the server round-trip produces —
     // otherwise every poll reads as a change and repaints over what's being typed.
-    s.items = s.items.map(i => "oneoff" in i ? i : { ...i, staple: i.staple || false, oneoff:false });
+    s.items = s.items.map(i => "onHand" in i ? i : { ...i, staple: i.staple || false, oneoff: i.oneoff || false, onHand:false });
     s.interchangeable = s.interchangeable || [];
     s.recipes = s.recipes || [];
     return s;
@@ -377,8 +377,8 @@ async function apiCall(method, path, body){
 }
 
 /* boundary mappers — client uses {id,name,cat,store}, server uses {name,category,default_store} */
-const toServerItem = it => ({ name: it.name, category: it.cat, default_store: it.store, staple: !!it.staple, oneoff: !!it.oneoff });
-const fromServerItem = r => ({ id: r.id, name: r.name, cat: r.category, store: r.default_store, staple: !!r.staple, oneoff: !!r.oneoff });
+const toServerItem = it => ({ name: it.name, category: it.cat, default_store: it.store, staple: !!it.staple, oneoff: !!it.oneoff, on_hand: !!it.onHand });
+const fromServerItem = r => ({ id: r.id, name: r.name, cat: r.category, store: r.default_store, staple: !!r.staple, oneoff: !!r.oneoff, onHand: !!r.on_hand });
 const toServerChecked = c => ({ qty: c.qty || 1, store_override: c.store != null ? c.store : null });
 const fromServerChecked = r => ({ qty: r.qty, store: r.store_override });
 const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store: l.store, qty: l.qty });
@@ -485,6 +485,9 @@ const checkedIds = () => Object.keys(state.checked).filter(byId);
 // One-offs live only on the current list, so they never appear as browsable
 // inventory on Shop or in Manage.
 const inventory = () => state.items.filter(i => !i.oneoff);
+// Things you always have. Recipes never put these on the list on their own —
+// salt in twelve recipes is noise, not shopping. Adding one by hand still works.
+const autoAddable = id => { const it = byId(id); return !!it && !it.onHand; };
 // Items come back in insertion order; alphabetical is what you can actually scan.
 // localeCompare so case and accents sort sensibly rather than by code point.
 const byName = (a,b) => a.name.localeCompare(b.name);
@@ -1087,7 +1090,7 @@ function renderImport(){
 function renderRecipeDetail(id){
   const r = recipeById(id);
   if (!r){ openRecipe = null; return renderRecipes(); }
-  const shoppable = i => r.ingredients[i].itemId && byId(r.ingredients[i].itemId);
+  const shoppable = i => r.ingredients[i].itemId && autoAddable(r.ingredients[i].itemId);
   const linkedIdx = r.ingredients.map((g,i)=>i).filter(shoppable);
   const linked = linkedIdx.length;
   const picking = !!pickSel;
@@ -1251,7 +1254,7 @@ function materializeIngredients(ingredients){
     const existing = state.items.find(i => !i.oneoff && i.name.toLowerCase() === name.toLowerCase());
     if (existing){ g.itemId = existing.id; continue; }
     const cat = state.cats.includes(g.newCat) ? g.newCat : (state.cats[0] || "Pantry");
-    const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store: 0, staple: false, oneoff: false };
+    const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store: 0, staple: false, oneoff: false, onHand: false };
     state.items.push(it);
     enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
     g.itemId = it.id;
@@ -1434,7 +1437,7 @@ function renderCook(){
   if (loose.length) html += `<div class="cat">No day yet</div><div class="list">${loose.map(row).join("")}</div>`;
 
   const allIngredients = new Set();
-  for (const r of list) for (const g of r.ingredients) if (g.itemId && byId(g.itemId) && !state.checked[g.itemId]) allIngredients.add(g.itemId);
+  for (const r of list) for (const g of r.ingredients) if (g.itemId && autoAddable(g.itemId) && !state.checked[g.itemId]) allIngredients.add(g.itemId);
 
   $("#v-cook").innerHTML = html +
     `<button class="btn" id="cookadd">Add recipes to the week</button>` +
@@ -1514,7 +1517,8 @@ function renderManage(){
     <p>Tap a name to rename it, the store pill to change its default store.
        <b>Staple</b> marks something you always want in stock. On a category,
        <b>Any item counts</b> means the items stand in for each other — you want
-       some fruit each week, not one specific fruit.</p>
+       some fruit each week, not one specific fruit. <b>On hand</b> means recipes
+       never add it to your list on their own — salt, pepper, oil.</p>
     ${cats.filter(c=>inventory().some(i=>i.cat===c)).map(c=>
       `<div class="cat">
          <button class="catname" data-catrename="${esc(c)}">${esc(c)}</button>
@@ -1526,6 +1530,7 @@ function renderManage(){
            <div class="ectl">
              <button class="store s${i.store}" data-default="${i.id}">${esc(STORES[i.store])}</button>
              <button class="flag ${i.staple?"on":""}" data-staple="${i.id}">Staple</button>
+            <button class="flag ${i.onHand?"on":""}" data-onhand="${i.id}">On hand</button>
              <button class="del" data-del="${i.id}">Delete</button>
            </div>
          </div>`;}).join("")}</div>`).join("")}
@@ -1630,7 +1635,7 @@ document.addEventListener("click", e => {
     let n = 0;
     for (const r of planned())
       for (const g of r.ingredients){
-        if (!g.itemId || !byId(g.itemId) || state.checked[g.itemId]) continue;
+        if (!g.itemId || !autoAddable(g.itemId) || state.checked[g.itemId]) continue;
         state.checked[g.itemId] = { qty:1, store:null };
         enqueue("PUT", "/api/checked/" + encodeURIComponent(g.itemId), toServerChecked(state.checked[g.itemId]));
         n++;
@@ -1704,7 +1709,7 @@ document.addEventListener("click", e => {
     // Everything shoppable starts ticked; it's quicker to remove the few you
     // already have than to re-pick the whole list.
     pickSel = new Set(r.ingredients.map((g,i)=>i)
-      .filter(i => r.ingredients[i].itemId && byId(r.ingredients[i].itemId)));
+      .filter(i => r.ingredients[i].itemId && autoAddable(r.ingredients[i].itemId)));
     renderRecipes();
     return;
   }
@@ -1756,7 +1761,9 @@ document.addEventListener("click", e => {
     for (let gi = 0; gi < r.ingredients.length; gi++){
       const g = r.ingredients[gi];
       if (pickSel && !pickSel.has(gi)) continue;
+      // Without an explicit pick, skip the always-on-hand items.
       if (!g.itemId || !byId(g.itemId) || state.checked[g.itemId]) continue;
+      if (!pickSel && !autoAddable(g.itemId)) continue;
       state.checked[g.itemId] = { qty:1, store:null };
       enqueue("PUT", "/api/checked/" + encodeURIComponent(g.itemId), toServerChecked(state.checked[g.itemId]));
       n++;
@@ -1800,7 +1807,7 @@ document.addEventListener("click", e => {
     const cats = state.cats;
     sheet("Category for " + name, cats, -1, ci => {
       sheet("Default store for " + name, STORES, 0, si => {
-        const it = { id: slug(cats[ci])+"_"+slug(name)+"_"+uid(), name, cat: cats[ci], store: si, staple:false, oneoff:false };
+        const it = { id: slug(cats[ci])+"_"+slug(name)+"_"+uid(), name, cat: cats[ci], store: si, staple:false, oneoff:false, onHand:false };
         state.items.push(it);
         enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
         draft.ingredients[idx].itemId = it.id;
@@ -1922,6 +1929,16 @@ document.addEventListener("click", e => {
     const it = byId(stp.dataset.staple);
     if (!it) return;
     it.staple = !it.staple;
+    enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
+    save(); renderManage();
+    return;
+  }
+
+  const oh = t.closest("[data-onhand]");
+  if (oh){
+    const it = byId(oh.dataset.onhand);
+    if (!it) return;
+    it.onHand = !it.onHand;
     enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
     save(); renderManage();
     return;
@@ -2080,7 +2097,7 @@ function addItem(){
   if (cat === "__new") return toast("Pick a category first");
   if (state.items.some(i => i.cat===cat && i.name.toLowerCase()===name.toLowerCase()))
     return toast(name + " is already in " + cat);
-  const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store, staple:false, oneoff:false };
+  const it = { id: slug(cat)+"_"+slug(name)+"_"+uid(), name, cat, store, staple:false, oneoff:false, onHand:false };
   state.items.push(it);
   enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
   save(); render(); toast(`Added ${name} to ${cat}`);
@@ -2092,7 +2109,7 @@ function addOneOff(){
   const name = ($("#oo").value || "").trim();
   if (!name) return toast("Give the one-off a name first");
   const store = +$("#oos").value;
-  const it = { id: "oneoff_"+slug(name)+"_"+uid(), name, cat: "One-off", store, staple:false, oneoff:true };
+  const it = { id: "oneoff_"+slug(name)+"_"+uid(), name, cat: "One-off", store, staple:false, oneoff:true, onHand:false };
   state.items.push(it);
   state.checked[it.id] = { qty:1, store:null };
   enqueue("PUT", "/api/items/" + encodeURIComponent(it.id), toServerItem(it));
