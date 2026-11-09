@@ -1488,6 +1488,39 @@ function releaseAwake(){ try { if (wakeLock){ wakeLock.release(); wakeLock = nul
 document.addEventListener("visibilitychange", () => { if (!document.hidden && cooking) keepAwake(); });
 
 /* ---------- manage view ---------- */
+let manageQuery = "";
+
+/* Split out from renderManage so typing can repaint just this list. Rebuilding
+   the whole tab on each keystroke would drop focus and close the keyboard —
+   the same trap the Shop search avoids. */
+function manageItemsHTML(){
+  const q = manageQuery.trim().toLowerCase();
+  // Matching the category too means "dairy" pulls up the whole section, which
+  // is how you'd look for something whose name you can't quite remember.
+  const hits = inventory().filter(i =>
+    !q || i.name.toLowerCase().includes(q) || i.cat.toLowerCase().includes(q));
+  if (!hits.length)
+    return `<div class="empty" style="padding:30px 10px">No items match “${esc(manageQuery)}”</div>`;
+
+  const shown = state.cats.filter(c => hits.some(i => i.cat === c));
+  return (q ? `<p style="margin:10px 0 0">${hits.length} item${hits.length===1?"":"s"} matching “${esc(manageQuery)}”</p>` : "") +
+    shown.map(c =>
+      `<div class="cat">
+         <button class="catname" data-catrename="${esc(c)}">${esc(c)}</button>
+         <button class="flag ${state.interchangeable.includes(c)?"on":""}" data-catany="${esc(c)}">Any item counts</button>
+       </div>
+       <div class="list">${hits.filter(i=>i.cat===c).sort(byName).map(i =>
+         `<div class="erow">
+           <input class="editname" value="${esc(i.name)}" data-rename="${i.id}">
+           <div class="ectl">
+             <button class="store s${i.store}" data-default="${i.id}">${esc(STORES[i.store])}</button>
+             <button class="flag ${i.staple?"on":""}" data-staple="${i.id}">Staple</button>
+             <button class="flag ${i.onHand?"on":""}" data-onhand="${i.id}">On hand</button>
+             <button class="del" data-del="${i.id}">Delete</button>
+           </div>
+         </div>`).join("")}</div>`).join("");
+}
+
 function renderManage(){
   $("#tools").innerHTML = "";
   const cats = state.cats;
@@ -1519,21 +1552,8 @@ function renderManage(){
        <b>Any item counts</b> means the items stand in for each other — you want
        some fruit each week, not one specific fruit. <b>On hand</b> means recipes
        never add it to your list on their own — salt, pepper, oil.</p>
-    ${cats.filter(c=>inventory().some(i=>i.cat===c)).map(c=>
-      `<div class="cat">
-         <button class="catname" data-catrename="${esc(c)}">${esc(c)}</button>
-         <button class="flag ${state.interchangeable.includes(c)?"on":""}" data-catany="${esc(c)}">Any item counts</button>
-       </div>
-       <div class="list">${inventory().filter(i=>i.cat===c).sort(byName).map(i=>{
-         return `<div class="erow">
-           <input class="editname" value="${esc(i.name)}" data-rename="${i.id}">
-           <div class="ectl">
-             <button class="store s${i.store}" data-default="${i.id}">${esc(STORES[i.store])}</button>
-             <button class="flag ${i.staple?"on":""}" data-staple="${i.id}">Staple</button>
-            <button class="flag ${i.onHand?"on":""}" data-onhand="${i.id}">On hand</button>
-             <button class="del" data-del="${i.id}">Delete</button>
-           </div>
-         </div>`;}).join("")}</div>`).join("")}
+    <input class="search" id="mq" type="search" placeholder="Search items" value="${esc(manageQuery)}">
+    <div id="mitems">${manageItemsHTML()}</div>
   </div>`;
 }
 
@@ -2012,6 +2032,11 @@ document.addEventListener("click", e => {
 
 document.addEventListener("input", e => {
   // Re-render the list only, so the search field keeps focus and the keyboard stays up.
+  if (e.target.id === "mq"){
+    manageQuery = e.target.value;
+    $("#mitems").innerHTML = manageItemsHTML();
+    return;
+  }
   if (e.target.id === "rq"){
     rQuery = e.target.value;
     const list = visibleRecipes();
