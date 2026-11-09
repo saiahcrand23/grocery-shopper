@@ -846,16 +846,24 @@ const relDay = d =>
 
 const safeUrl = u => /^https?:\/\//i.test((u || "").trim()) ? u.trim() : null;
 
-/* Trends reports on everything that's been bought, staple or not — it's an
-   observation tool, unlike suggestions, which assert you need something. */
+// Is this the installed app (no browser chrome) rather than a tab?
 const standalone = () => window.navigator.standalone === true ||
   (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
 
-/* Printing from an installed web app is awkward: window.print() does nothing
-   there, and opening a page traps you in a chrome-less webview with no way
-   back. The share sheet is the one route that reaches a Print option, so
-   anything printable is fetched as a PDF from the server and handed to it. */
+/* Printing differs by where the app is running.
+   A desktop browser, or Safari in a tab, renders a PDF with its own print
+   controls — so just open the URL and let Cmd-P do the work. Opening it
+   directly from the click, with no await first, also keeps popup blockers out
+   of it.
+   An installed iOS app has no print UI at all and no address bar, so the share
+   sheet is the only route to Print; that needs the file in hand, hence the
+   fetch. Note the macOS share sheet has no Print entry, which is why this is
+   decided by standalone-ness and not by whether sharing is available. */
 async function sharePdf(path, filename, label){
+  if (!standalone()){
+    window.open(API_BASE + path, "_blank");
+    return;
+  }
   toast(`Preparing the ${label}…`);
   try {
     const res = await fetch(API_BASE + path);
@@ -868,19 +876,16 @@ async function sharePdf(path, filename, label){
       await navigator.share({ files: [file] });
       return;
     }
-    if (standalone()) {
-      // Opening it here would strand them in a view with no way out.
-      return toast("Open grocery.crandnet.com in Safari to print");
-    }
-    const url = URL.createObjectURL(file);
-    window.open(url, "_blank");
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    // Opening it here would strand them in a view with no way out.
+    toast("Open grocery.crandnet.com in Safari to print");
   } catch (e) {
     if (e && e.name === "AbortError") return;   // share sheet dismissed
     toast(e.message || `Couldn't prepare the ${label}`);
   }
 }
 
+/* Trends reports on everything that's been bought, staple or not — it's an
+   observation tool, unlike suggestions, which assert you need something. */
 function renderTrends(){
   const a = analyze();
   const rows = state.items
