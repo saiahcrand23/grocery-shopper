@@ -189,6 +189,13 @@ select.field{-webkit-appearance:none;appearance:none;
 button:disabled{opacity:.5}
 .del{flex:0 0 auto;color:var(--danger);font-size:13px;font-weight:600;padding:8px 4px}
 .editname{flex:1;min-width:0;background:none;border:0;padding:9px 0;font-size:16px}
+.prow{display:flex;align-items:center;gap:8px}
+.pname{font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pflag{flex:0 0 auto;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.prow .store{margin-left:auto;flex:0 0 auto}
+/* 16px keeps iOS from zooming the page when the field takes focus. */
+.pid{flex:1;min-width:0;font-size:16px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.fine{font-size:12.5px;color:var(--muted)}
 
 /* ---- tab bar ---- */
 nav{
@@ -264,6 +271,9 @@ nav svg{width:22px;height:22px;flex:0 0 auto}
 "use strict";
 
 const STORES = ["Wal-Mart", "Sam's Club", "Produce Store"];
+// Retailers we can hold a product number for, positionally matched to STORES.
+// The produce store is a local shop, so there's nothing to point at online.
+const STORE_RETAILER = ["walmart", "sams", null];
 const KEY = "grocery-shopper-v1";
 
 /* Default starting inventory — what a brand-new install begins with.
@@ -294,7 +304,7 @@ function seed(){
   for (const [cat, names] of Object.entries(SEED))
     for (const n of names)
       items.push({ id: slug(cat)+"_"+slug(n), name:n, cat, store:0, staple:false, oneoff:false, onHand:false });
-  return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[], interchangeable:[], recipes:[] };
+  return { v:1, cats:Object.keys(SEED), items, checked:{}, history:[], interchangeable:[], recipes:[], products:[] };
 }
 
 let state = load();
@@ -315,6 +325,7 @@ function load(){
     s.items = s.items.map(i => "onHand" in i ? i : { ...i, staple: i.staple || false, oneoff: i.oneoff || false, onHand:false });
     s.interchangeable = s.interchangeable || [];
     s.recipes = s.recipes || [];
+    s.products = s.products || [];
     return s;
   } catch { return seed(); }
 }
@@ -383,6 +394,7 @@ const toServerChecked = c => ({ qty: c.qty || 1, store_override: c.store != null
 const fromServerChecked = r => ({ qty: r.qty, store: r.store_override });
 const toServerLine = l => ({ item_id: l.id, name: l.name, category: l.cat, store: l.store, qty: l.qty });
 const fromServerLine = l => ({ id: l.item_id, name: l.name, cat: l.category, store: l.store, qty: l.qty });
+const fromServerProduct = p => ({ itemId: p.item_id, retailer: p.retailer, productId: p.product_id });
 const toServerRecipe = r => ({ title: r.title, instructions: r.instructions, minutes: r.minutes,
   cost: r.cost, healthy: !!r.healthy, health_notes: r.healthNotes, source_url: r.sourceUrl || "",
   planned_day: r.plannedDay == null ? null : r.plannedDay,
@@ -405,6 +417,9 @@ async function pushFullSnapshot(){
     await apiCall("PUT", "/api/checked/" + encodeURIComponent(id), toServerChecked(c));
   for (const r of state.recipes)
     await apiCall("PUT", "/api/recipes/" + encodeURIComponent(r.id), toServerRecipe(r));
+  for (const p of state.products)
+    await apiCall("PUT", `/api/item-products/${encodeURIComponent(p.itemId)}/${encodeURIComponent(p.retailer)}`,
+                  { product_id: p.productId });
   // deterministic ids so a retry after a partial failure can't create duplicate orders
   for (const h of state.history)
     await apiCall("POST", "/api/orders", { id: h.id || "seed-"+h.ts, finalized_at: new Date(h.ts).toISOString(), lines: h.lines.map(toServerLine) });
@@ -423,11 +438,14 @@ function adoptServerSnapshot(remote){
     history: remote.history.slice().reverse().map(h => ({ id: h.id, ts: Date.parse(h.finalized_at), lines: h.lines.map(fromServerLine) })),
     // Sorted so this serializes identically however it was assembled.
     interchangeable: remote.categories.filter(c => c.interchangeable).map(c => c.name).sort(),
-    recipes: (remote.recipes || []).map(fromServerRecipe)
+    recipes: (remote.recipes || []).map(fromServerRecipe),
+    // The server already sorts these; keep them in that order so the snapshot
+    // compare below sees no change when nothing changed.
+    products: (remote.products || []).map(fromServerProduct)
   };
   const current = { cats: state.cats, items: state.items, checked: state.checked,
                     history: state.history, interchangeable: state.interchangeable,
-                    recipes: state.recipes };
+                    recipes: state.recipes, products: state.products };
   if (JSON.stringify(next) === JSON.stringify(current)) return false;
   Object.assign(state, next);
   save();
@@ -1494,10 +1512,104 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && co
 
 /* ---------- manage view ---------- */
 let manageQuery = "";
+// Product-number panel: show only the items still missing one, or all of them.
+let productsExpanded = false;
 
 /* Split out from renderManage so typing can repaint just this list. Rebuilding
    the whole tab on each keystroke would drop focus and close the keyboard —
    the same trap the Shop search avoids. */
+/* ---------- retailer product numbers ----------
+   One number per item per retailer, captured by hand off a product page while
+   shopping. Identifiers only — no titles, prices or descriptions; see
+   server/db.py for why that line is where it is. Nothing here talks to a
+   retailer: it's the lookup table an ordering integration would need, built up
+   a few items at a time so it already exists if one ever becomes available. */
+
+// String comparison that matches SQLite's BINARY collation, so the client
+// sorts these exactly as the server's ORDER BY does. localeCompare doesn't:
+// it folds case and punctuation, and a different order would read as a change
+// on every poll and repaint the page out from under whoever's typing.
+const binCmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+
+const retailerOf = it => (it && STORE_RETAILER[it.store]) || null;
+
+function productIdFor(itemId, retailer){
+  const p = state.products.find(p => p.itemId === itemId && p.retailer === retailer);
+  return p ? p.productId : "";
+}
+
+// A Walmart product link ends in its item number (/ip/Great-Value-Milk/10450114);
+// a Sam's Club one ends in a prod id (/p/members-mark-milk/prod21700146). Take
+// the last path segment, so a pasted link stores the same string someone typing
+// the id by hand would — stripping "prod" off one and not the other would file
+// the same product under two different numbers.
+//
+// Requiring four digits in it is what keeps a URL with no id on the end
+// (/ip/Great-Value-Milk) from quietly saving its slug as the product number.
+const looksLikeProductId = s => /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(s) && /\d{4,}/.test(s);
+
+function parseProductId(raw){
+  const s = String(raw || "").trim().split(/[?#]/)[0].replace(/\/+$/, "");
+  if (!s) return "";
+  const last = s.split("/").pop();
+  if (looksLikeProductId(last)) return last;
+  const runs = s.match(/\d{4,}/g);
+  return runs ? runs[runs.length - 1] : "";
+}
+
+/* Saves what was typed and returns the number it actually stored ("" if the
+   field was cleared or held nothing recognisable). */
+function setProductId(itemId, raw){
+  const it = byId(itemId);
+  const retailer = retailerOf(it);
+  if (!retailer) return "";
+  const id = parseProductId(raw);
+  const path = `/api/item-products/${encodeURIComponent(itemId)}/${encodeURIComponent(retailer)}`;
+  const had = productIdFor(itemId, retailer);
+  if (!id && !raw.trim()){
+    if (!had) return "";
+    state.products = state.products.filter(p => !(p.itemId === itemId && p.retailer === retailer));
+    enqueue("DELETE", path);
+    save();
+    return "";
+  }
+  if (!id || id === had) return had;
+  state.products = state.products.filter(p => !(p.itemId === itemId && p.retailer === retailer));
+  state.products.push({ itemId, retailer, productId: id });
+  state.products.sort((a, b) => binCmp(a.itemId, b.itemId) || binCmp(a.retailer, b.retailer));
+  enqueue("PUT", path, { product_id: id });
+  save();
+  return id;
+}
+
+// Items that could carry a number, and how many already do.
+const mappableItems = () => inventory().filter(i => retailerOf(i));
+const unmappedItems = () => mappableItems().filter(i => !productIdFor(i.id, retailerOf(i)));
+const productCount = () => `${mappableItems().length - unmappedItems().length}/${mappableItems().length}`;
+
+function productsHTML(){
+  const shown = productsExpanded ? mappableItems() : unmappedItems();
+  if (!shown.length)
+    return `<div class="empty" style="padding:26px 10px">Every item has a number. Nothing left to capture.</div>`;
+  // Staples first: they come back every week, so their numbers pay off fastest.
+  return shown.slice().sort((a, b) => (b.staple ? 1 : 0) - (a.staple ? 1 : 0) || byName(a, b))
+    .map(i => {
+      const cur = productIdFor(i.id, retailerOf(i));
+      return `<div class="erow">
+        <div class="prow">
+          <span class="pname">${esc(i.name)}</span>
+          ${i.staple ? '<span class="pflag">staple</span>' : ""}
+          <span class="store s${i.store}">${esc(STORES[i.store])}</span>
+        </div>
+        <div class="ectl">
+          <input class="pid" data-pid="${i.id}" value="${esc(cur)}" placeholder="Paste the product link, or type the number"
+                 inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false">
+          ${cur ? `<button class="del" data-pdel="${i.id}">Clear</button>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+}
+
 function manageItemsHTML(){
   const q = manageQuery.trim().toLowerCase();
   // Matching the category too means "dairy" pulls up the whole section, which
@@ -1548,6 +1660,18 @@ function renderManage(){
     <button class="btn ghost" id="copy">Copy backup to clipboard</button>
     <button class="btn ghost" id="imp">Import backup…</button>
     <input type="file" id="file" accept="application/json,.json" hidden>
+  </div>
+
+  <div class="card">
+    <h2>Store product numbers · <span id="pcount">${productCount()}</span></h2>
+    <p>Open an item on Wal-Mart or Sam's Club, copy the link from the address bar,
+       and paste it here — the number at the end is what gets saved. Staples are
+       listed first because they come back every week.</p>
+    <p class="fine">Only the number is kept, never prices, names or descriptions:
+       those belong to the store, and holding a copy of them isn't ours to do.
+       Nothing is sent to any retailer — this is groundwork for ordering, not ordering.</p>
+    <button class="mini" id="ptoggle">${productsExpanded ? "Show only the ones missing" : "Show all items"}</button>
+    <div id="pitems">${productsHTML()}</div>
   </div>
 
   <div class="card">
@@ -2029,6 +2153,18 @@ document.addEventListener("click", e => {
     });
     state.checked = {}; enqueue("DELETE", "/api/checked"); save(); render();
   }
+  const pdel = t.closest("[data-pdel]");
+  if (pdel){
+    setProductId(pdel.dataset.pdel, "");
+    $("#pitems").innerHTML = productsHTML();
+    $("#pcount").textContent = productCount();
+    toast("Cleared");
+  }
+  if (t.id === "ptoggle"){
+    productsExpanded = !productsExpanded;
+    t.textContent = productsExpanded ? "Show only the ones missing" : "Show all items";
+    $("#pitems").innerHTML = productsHTML();
+  }
   if (t.id === "add") addItem();
   if (t.id === "exp") exportJSON();
   if (t.id === "copy") copyJSON();
@@ -2078,6 +2214,16 @@ document.addEventListener("change", e => {
       save(); render();
       const sel = $("#nc"); if (sel) sel.value = name; }
     else e.target.selectedIndex = 0;
+  }
+  // "change", not "input": it fires on blur or Enter, so a half-typed number
+  // is never saved and the field isn't rebuilt while it still has focus.
+  if (e.target.dataset && e.target.dataset.pid !== undefined){
+    const typed = e.target.value;
+    const saved = setProductId(e.target.dataset.pid, typed);
+    e.target.value = saved;
+    if (typed.trim() && !saved) toast("No product number in that — paste the whole link");
+    else toast(saved ? "Saved" : "Cleared");
+    const c = $("#pcount"); if (c) c.textContent = productCount();
   }
   if (e.target.dataset && e.target.dataset.rename !== undefined){
     const it = byId(e.target.dataset.rename);
@@ -2173,7 +2319,14 @@ function finalize(){
   state.checked = {};
   enqueue("POST", "/api/orders", { id, finalized_at: new Date(ts).toISOString(), lines: lines.map(toServerLine) });
   save(); tab = "hist"; render(); window.scrollTo(0,0);
-  toast("Order saved to History");
+  // The things you just bought are exactly the ones whose product numbers are
+  // worth having — you had the page open anyway. Mentioning it, not insisting.
+  const missing = lines.filter(l => {
+    const r = retailerOf(byId(l.id));
+    return l.id && r && !productIdFor(l.id, r);
+  }).length;
+  toast(missing ? `Order saved · ${missing} item${missing === 1 ? "" : "s"} have no product number yet`
+                : "Order saved to History");
 }
 
 

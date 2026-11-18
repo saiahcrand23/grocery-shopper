@@ -51,6 +51,24 @@ CREATE TABLE IF NOT EXISTS order_lines (
   qty INTEGER NOT NULL
 );
 
+-- A household item's product number at one retailer, captured by hand from a
+-- product page while shopping.
+--
+-- Deliberately identifiers only. Walmart's Agentic Access Terms (October 21,
+-- 2026 version) §6 license their product data for completing a purchase, not
+-- for keeping a copy of their catalog: titles, descriptions, prices,
+-- availability and fulfillment data are all "Walmart Proprietary Data" and
+-- must not be retained beyond what a purchase reasonably requires. A product
+-- number you noted down to buy the same thing again is not a catalog; a cache
+-- of their names and prices would be. Fetch everything else live.
+CREATE TABLE IF NOT EXISTS item_products (
+  item_id TEXT NOT NULL REFERENCES items(id),
+  retailer TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  PRIMARY KEY (item_id, retailer)
+);
+
 CREATE TABLE IF NOT EXISTS recipes (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,

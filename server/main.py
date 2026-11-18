@@ -298,6 +298,10 @@ class ItemIn(BaseModel):
     on_hand: Optional[bool] = None
 
 
+class ItemProductIn(BaseModel):
+    product_id: str
+
+
 class CategoryIn(BaseModel):
     position: Optional[int] = None
     interchangeable: Optional[bool] = None
@@ -362,6 +366,16 @@ def _categories(conn):
     return [dict(r) for r in rows]
 
 
+def _item_products(conn):
+    """Sorted so the snapshot serializes identically every time — the client
+    compares whole snapshots to decide whether to repaint, and an unstable
+    order would rebuild the DOM (and steal the keyboard) on every poll."""
+    rows = conn.execute(
+        "SELECT item_id, retailer, product_id FROM item_products ORDER BY item_id, retailer"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _checked(conn):
     rows = conn.execute("SELECT item_id, qty, store_override, updated_at FROM checked").fetchall()
     return {r["item_id"]: {"qty": r["qty"], "store_override": r["store_override"], "updated_at": r["updated_at"]} for r in rows}
@@ -405,6 +419,7 @@ def get_state():
             "checked": _checked(conn),
             "history": _history(conn),
             "recipes": _recipes(conn),
+            "products": _item_products(conn),
         }
 
 
@@ -446,6 +461,43 @@ def delete_item(item_id: str):
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="item not found")
         conn.execute("DELETE FROM checked WHERE item_id=?", (item_id,))
+        conn.execute("DELETE FROM item_products WHERE item_id=?", (item_id,))
+        return {"ok": True}
+
+
+# Which retailers we can hold a product number for, positionally matched to
+# STORES. The produce store is a local shop with nothing to point at online.
+RETAILERS = ["walmart", "sams", None]
+
+
+@app.put("/api/item-products/{item_id}/{retailer}")
+def upsert_item_product(item_id: str, retailer: str, body: ItemProductIn):
+    if retailer not in ("walmart", "sams"):
+        raise HTTPException(status_code=400, detail="unknown retailer")
+    product_id = body.product_id.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,31}", product_id):
+        raise HTTPException(status_code=400, detail="that doesn't look like a product number")
+    with get_conn() as conn:
+        if conn.execute("SELECT 1 FROM items WHERE id=? AND deleted_at IS NULL", (item_id,)).fetchone() is None:
+            raise HTTPException(status_code=404, detail="item not found")
+        conn.execute(
+            """
+            INSERT INTO item_products (item_id, retailer, product_id, captured_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(item_id, retailer) DO UPDATE SET
+              product_id=excluded.product_id, captured_at=excluded.captured_at
+            """,
+            (item_id, retailer, product_id, now()),
+        )
+        return {"item_id": item_id, "retailer": retailer, "product_id": product_id}
+
+
+@app.delete("/api/item-products/{item_id}/{retailer}")
+def delete_item_product(item_id: str, retailer: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM item_products WHERE item_id=? AND retailer=?", (item_id, retailer))
+        # Idempotent on purpose: the client's queue retries, and a delete that
+        # already landed must not jam it with a permanent 404.
         return {"ok": True}
 
 

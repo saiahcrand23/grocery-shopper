@@ -18,6 +18,8 @@ const needed = [
   "renderManage", "manageItemsHTML", "rowHTML", "groupRowHTML",
   "saveDraft", "importFiles", "extractRecipe", "materializeIngredients", "pickItemFor",
   "suggestions", "analyze", "recipeAmounts",
+  "parseProductId", "setProductId", "productIdFor", "productsHTML", "productCount",
+  "retailerOf", "mappableItems", "unmappedItems",
   "addOneOff", "dropOneOff", "finalize", "addItem",
   "adoptServerSnapshot", "setPlannedDay", "planned", "toast", "sheet", "save",
 ];
